@@ -28,7 +28,15 @@ Install the required Python packages:
 pip install zeroconf pymupdf pillow pywin32
 ```
 
-## Usage
+## Installation (Recommended)
+
+The easiest way to install and run the AirPrint Bridge is using the provided Windows Installer. This will automatically install the bridge as a background Windows Service that starts when your PC boots.
+
+1. Download the latest `AirPrintBridge_Setup_vX.X.X.exe` from the Releases page.
+2. Run the installer and follow the prompts.
+3. The AirPrint Bridge service will automatically start in the background.
+
+## Manual Installation & Usage (Developers)
 
 1. Set the printer you want to share as your **Default Printer** in Windows.
 2. Run the bridge script:
@@ -38,7 +46,8 @@ python airprint_bridge.py
 ```
 
 3. The server will detect your local IP address and default printer, bind to port `631` (the standard IPP port), and begin broadcasting.
-4. On your iOS or Android device (connected to the same Wi-Fi network), open a document or photo, tap **Print**, and your Windows printer should appear in the list.
+4. (Optional) To run the script manually as a native Windows Service, use `python airprint_bridge.py install` and `python airprint_bridge.py start`.
+5. On your iOS or Android device (connected to the same Wi-Fi network), open a document or photo, tap **Print**, and your Windows printer should appear in the list.
 
 ## Diagnostics and Troubleshooting
 

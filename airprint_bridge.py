@@ -49,6 +49,10 @@ except ImportError:
 try:
     import win32api
     import win32print
+    import win32serviceutil
+    import win32service
+    import win32event
+    import servicemanager
 except ImportError:
     raise SystemExit(
         "Missing dependency: pywin32\n"
@@ -1122,7 +1126,7 @@ class MDNSAdvertiser:
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def main(shutdown_event: threading.Event) -> None:
     """Start the AirPrint bridge server."""
     logger.info("=" * 60)
     logger.info("AirPrint Bridge starting up")
@@ -1147,24 +1151,6 @@ def main() -> None:
     server = ThreadedIPPServer(("0.0.0.0", IPP_PORT), IPPRequestHandler)
     logger.info("IPP server listening on 0.0.0.0:%d", IPP_PORT)
 
-    # ---- Graceful shutdown ----
-    shutdown_event = threading.Event()
-
-    def _shutdown(signum: Optional[int] = None, frame=None) -> None:
-        """Signal handler — request a clean shutdown."""
-        sig_name = (
-            signal.Signals(signum).name if signum else "unknown"
-        )
-        logger.info("Shutdown requested (signal=%s)", sig_name)
-        shutdown_event.set()
-
-    # Register signal handlers for clean exit.
-    signal.signal(signal.SIGINT, _shutdown)
-    signal.signal(signal.SIGTERM, _shutdown)
-    # On Windows, SIGBREAK covers Ctrl+Break and Task Manager termination.
-    if hasattr(signal, "SIGBREAK"):
-        signal.signal(signal.SIGBREAK, _shutdown)
-
     def _cleanup() -> None:
         """atexit hook — ensures mDNS is always unregistered."""
         mdns.unregister()
@@ -1188,5 +1174,46 @@ def main() -> None:
         _cleanup()
 
 
+class AirPrintBridgeService(win32serviceutil.ServiceFramework):
+    _svc_name_ = "AirPrintBridge"
+    _svc_display_name_ = "AirPrint Bridge Service"
+    _svc_description_ = "Advertises local printers to Apple devices via mDNS and IPP."
+
+    def __init__(self, args):
+        win32serviceutil.ServiceFramework.__init__(self, args)
+        self.hWaitStop = win32event.CreateEvent(None, 0, 0, None)
+        self.shutdown_event = threading.Event()
+
+    def SvcStop(self):
+        self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
+        win32event.SetEvent(self.hWaitStop)
+        self.shutdown_event.set()
+
+    def SvcDoRun(self):
+        servicemanager.LogMsg(
+            servicemanager.EVENTLOG_INFORMATION_TYPE,
+            servicemanager.PYS_SERVICE_STARTED,
+            (self._svc_name_, '')
+        )
+        main(self.shutdown_event)
+
+
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) == 1:
+        # Run natively as a Windows Service
+        servicemanager.Initialize()
+        servicemanager.PrepareToHostSingle(AirPrintBridgeService)
+        servicemanager.StartServiceCtrlDispatcher()
+    else:
+        # Command-line usage
+        if sys.argv[1] == 'debug':
+            shutdown_event = threading.Event()
+            def _shutdown(signum=None, frame=None):
+                shutdown_event.set()
+            signal.signal(signal.SIGINT, _shutdown)
+            signal.signal(signal.SIGTERM, _shutdown)
+            if hasattr(signal, "SIGBREAK"):
+                signal.signal(signal.SIGBREAK, _shutdown)
+            main(shutdown_event)
+        else:
+            win32serviceutil.HandleCommandLine(AirPrintBridgeService)

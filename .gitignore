@@ -1,2 +1,9 @@
 *.log
 __pycache__/airprint_bridge.cpython-314.pyc
+SOCIAL_MEDIA.md
+installer.iss
+build.ps1
+*.spec
+/build
+/Release
+/dist
