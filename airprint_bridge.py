@@ -975,9 +975,6 @@ class MDNSAdvertiser:
         )
 
         # --- AirPrint subtype: _universal._sub._ipp._tcp.local. ---
-        # iOS filters AirPrint printers by this DNS-SD subtype PTR record.
-        # We register a second ServiceInfo with the subtype as type_ and
-        # the same instance name — this creates the required PTR record.
         airprint_subtype = f"_universal._sub.{IPP_SERVICE_TYPE}"
         subtype_service_name = f"{safe_name}.{airprint_subtype}"
 
@@ -991,16 +988,10 @@ class MDNSAdvertiser:
         )
         try:
             self._zc.register_service(self._subtype_info, strict=False)
-            logger.info(
-                "mDNS subtype registered: %s", subtype_service_name
-            )
+            logger.info("mDNS subtype registered: %s", subtype_service_name)
         except Exception:
-            # Non-fatal — Android will still work; only iOS may not.
-            logger.exception(
-                "Failed to register _universal subtype (AirPrint may "
-                "not be visible on iOS)"
-            )
-            self._subtype_info = None
+            logger.exception("Failed to register _universal subtype")
+
 
     def unregister(self) -> None:
         """Remove the service from the LAN."""
