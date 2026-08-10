@@ -349,10 +349,15 @@ def spool_to_printer(file_path: str, printer_name: str) -> None:
                 
                 page = pdf_doc.load_page(page_num)
                 
-                # PyMuPDF default DPI is 72. Calculate zoom to match printer DPI.
-                zoom_x = printer_dpi_x / 72.0
-                zoom_y = printer_dpi_y / 72.0
-                matrix = fitz.Matrix(zoom_x, zoom_y)
+                printable_width = hdc.GetDeviceCaps(win32con.HORZRES)
+                printable_height = hdc.GetDeviceCaps(win32con.VERTRES)
+                
+                # Scale the PDF page to fit perfectly inside the printable area
+                scale_x = printable_width / page.rect.width
+                scale_y = printable_height / page.rect.height
+                scale = min(scale_x, scale_y)
+                
+                matrix = fitz.Matrix(scale, scale)
                 
                 # Render to pixmap
                 pix = page.get_pixmap(matrix=matrix, alpha=False)
@@ -360,9 +365,16 @@ def spool_to_printer(file_path: str, printer_name: str) -> None:
                 # Convert to PIL Image
                 img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                 
+                # Center the image on the physical page
+                x_offset = (printable_width - pix.width) // 2
+                y_offset = (printable_height - pix.height) // 2
+                
                 # Draw to DC
                 dib = ImageWin.Dib(img)
-                dib.draw(hdc.GetHandleOutput(), (0, 0, pix.width, pix.height))
+                dib.draw(
+                    hdc.GetHandleOutput(), 
+                    (x_offset, y_offset, x_offset + pix.width, y_offset + pix.height)
+                )
                 
                 hdc.EndPage()
                 
