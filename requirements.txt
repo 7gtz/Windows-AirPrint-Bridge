@@ -3,3 +3,4 @@
 
 zeroconf>=0.131.0
 pywin32>=306
+Pillow>=10.0.0

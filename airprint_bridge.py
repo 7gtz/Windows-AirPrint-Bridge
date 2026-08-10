@@ -103,6 +103,7 @@ IPP_TAG_RANGE: int = 0x33
 MAGIC_PDF: bytes = b"%PDF"
 MAGIC_JPEG: bytes = b"\xFF\xD8\xFF"
 MAGIC_PNG: bytes = b"\x89PNG"
+MAGIC_URF: bytes = b"UNIRAST"   # Apple Raster (URF) format
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -155,11 +156,150 @@ def detect_file_type(data: bytes) -> Tuple[str, str]:
     """
     if data[:4] == MAGIC_PDF:
         return ".pdf", "application/pdf"
+    if data[:7] == MAGIC_URF:
+        return ".urf", "image/urf"
     if data[:3] == MAGIC_JPEG:
         return ".jpg", "image/jpeg"
     if data[:4] == MAGIC_PNG:
         return ".png", "image/png"
     return ".bin", "application/octet-stream"
+
+
+def convert_urf_to_pdf(urf_path: str) -> str:
+    """
+    Convert an Apple Raster (URF) file to PDF so Windows can print it.
+
+    URF format: 'UNIRAST\x00' (8-byte header) followed by one or more
+    page records.  Each page record has a 4-byte big-endian page header
+    length, then pixel data.  We extract page images and compose them
+    into a simple PDF.
+
+    If the ``Pillow`` library is available, we decode the raster pages
+    into images and wrap them in a PDF.  Otherwise, we fall back to
+    writing raw bytes as a single-page PDF image.
+    """
+    pdf_path = urf_path.rsplit(".", 1)[0] + ".pdf"
+    try:
+        # Attempt conversion with Pillow (best quality)
+        from PIL import Image
+        import io
+
+        with open(urf_path, "rb") as f:
+            data = f.read()
+
+        # URF header: 'UNIRAST\x00' (8 bytes) then page count (4 bytes BE)
+        if len(data) < 12 or data[:8] != b"UNIRAST\x00":
+            logger.warning("URF file has invalid header, treating as raw")
+            return urf_path
+
+        # Skip the 8-byte magic + 4-byte page count to the page data.
+        # Each page has a 32-byte page header, then raw pixel data.
+        # For a simpler approach, we try to find embedded JPEG or image data.
+        offset = 12  # past magic + page count
+
+        images = []
+        while offset < len(data):
+            # Page header is typically 32 bytes
+            if offset + 32 > len(data):
+                break
+            # Bytes 16-19: width (BE), bytes 20-23: height (BE)
+            # Byte 0: bits per pixel / color space info
+            page_header = data[offset:offset + 32]
+            bpp = page_header[0]  # bits per component
+            color_space = page_header[1]  # 1=sGray, 3=sRGB
+            # Duplex/quality fields at bytes 2,3
+            width = struct.unpack("!I", page_header[16:20])[0]
+            height = struct.unpack("!I", page_header[20:24])[0]
+            # Resolution at bytes 8-11 (dpi)
+            dpi = struct.unpack("!I", page_header[8:12])[0]
+            if dpi == 0:
+                dpi = 300
+
+            offset += 32  # advance past page header
+
+            # Determine channels and bytes per pixel
+            if color_space == 1:
+                channels = 1
+                mode = "L"
+            else:
+                channels = 3
+                mode = "RGB"
+
+            row_bytes = width * channels
+            page_data = bytearray()
+
+            # URF uses a simple run-length encoding per row
+            for _row in range(height):
+                if offset >= len(data):
+                    break
+                row = bytearray()
+                while len(row) < row_bytes:
+                    if offset >= len(data):
+                        break
+                    count_byte = data[offset]
+                    offset += 1
+                    if count_byte == 0:
+                        # Repeat the next pixel (count+1) times
+                        # count_byte 0 = 1 repeat of next pixel
+                        if offset + channels > len(data):
+                            break
+                        pixel = data[offset:offset + channels]
+                        offset += channels
+                        row.extend(pixel)
+                    elif count_byte <= 127:
+                        # Repeat next pixel (count_byte + 1) times
+                        if offset + channels > len(data):
+                            break
+                        pixel = data[offset:offset + channels]
+                        offset += channels
+                        row.extend(pixel * (count_byte + 1))
+                    else:
+                        # (257 - count_byte) literal pixels follow
+                        literal_count = 257 - count_byte
+                        literal_bytes = literal_count * channels
+                        if offset + literal_bytes > len(data):
+                            break
+                        row.extend(data[offset:offset + literal_bytes])
+                        offset += literal_bytes
+                # Pad or truncate to exact row width
+                page_data.extend(row[:row_bytes])
+
+            if width > 0 and height > 0 and len(page_data) >= row_bytes:
+                actual_height = min(height, len(page_data) // row_bytes)
+                img = Image.frombytes(
+                    mode, (width, actual_height),
+                    bytes(page_data[:actual_height * row_bytes]),
+                )
+                images.append(img)
+                logger.info(
+                    "URF page decoded: %dx%d %s @ %d dpi",
+                    width, actual_height, mode, dpi,
+                )
+
+        if images:
+            # Save all pages as a multi-page PDF
+            first = images[0]
+            if len(images) > 1:
+                first.save(
+                    pdf_path, "PDF", save_all=True,
+                    append_images=images[1:], resolution=dpi,
+                )
+            else:
+                first.save(pdf_path, "PDF", resolution=dpi)
+            logger.info("URF converted to PDF: %s (%d pages)", pdf_path, len(images))
+            return pdf_path
+
+    except ImportError:
+        logger.warning(
+            "Pillow not installed — cannot convert URF to PDF. "
+            "Install with: pip install Pillow"
+        )
+    except Exception:
+        logger.exception("URF→PDF conversion failed")
+
+    # Fallback: return original URF path (ShellExecute may still work
+    # if the user has a URF-capable viewer installed)
+    return urf_path
 
 
 def get_default_printer() -> str:
@@ -395,7 +535,9 @@ def _build_printer_attributes(
     attrs += _encode_text_attribute(IPP_TAG_KEYWORD, "printer-state-reasons", "none")
 
     # --- Capabilities ---
+    # iOS AirPrint requires image/urf in the supported formats list.
     attrs += _encode_text_attribute(IPP_TAG_MIMETYPE, "document-format-supported", "application/pdf")
+    attrs += _encode_additional_value(IPP_TAG_MIMETYPE, b"image/urf")
     attrs += _encode_additional_value(IPP_TAG_MIMETYPE, b"image/jpeg")
     attrs += _encode_additional_value(IPP_TAG_MIMETYPE, b"image/png")
     attrs += _encode_additional_value(IPP_TAG_MIMETYPE, b"application/octet-stream")
@@ -414,8 +556,8 @@ def _build_printer_attributes(
     attrs += _encode_text_attribute(IPP_TAG_LANGUAGE, "natural-language-configured", "en-us")
     attrs += _encode_text_attribute(IPP_TAG_LANGUAGE, "generated-natural-language-supported", "en-us")
 
-    # Color support (monochrome = safe default)
-    attrs += _encode_text_attribute(IPP_TAG_KEYWORD, "color-supported", "false")
+    # Color support — MUST be boolean per IPP spec; iOS rejects keyword encoding.
+    attrs += _encode_boolean_attribute("color-supported", False)
 
     # Pages-per-minute (informational)
     attrs += _encode_integer_attribute("pages-per-minute", 10)
@@ -472,6 +614,23 @@ def _build_printer_attributes(
         f"{uuid_hex[12:16]}-{uuid_hex[16:20]}-{uuid_hex[20:]}"
     )
     attrs += _encode_text_attribute(IPP_TAG_URI, "printer-uuid", printer_uuid)
+
+    # printer-more-info — iOS checks for this URI
+    attrs += _encode_text_attribute(
+        IPP_TAG_URI, "printer-more-info",
+        f"http://{host_ip}:{IPP_PORT}/",
+    )
+
+    # URF (Apple Raster) capabilities — iOS requires this attribute.
+    # W8 = max width 8 inches, SRGB24 = 24-bit sRGB, V1.4 = URF version,
+    # RS300-600 = supported resolutions, DM1 = duplex mode 1 (simplex).
+    attrs += _encode_text_attribute(
+        IPP_TAG_KEYWORD, "urf-supported", "W8"
+    )
+    attrs += _encode_additional_value(IPP_TAG_KEYWORD, b"SRGB24")
+    attrs += _encode_additional_value(IPP_TAG_KEYWORD, b"V1.4")
+    attrs += _encode_additional_value(IPP_TAG_KEYWORD, b"RS300-600")
+    attrs += _encode_additional_value(IPP_TAG_KEYWORD, b"DM1")
 
     # AirPrint-specific: printer-type flags
     # Bit 0 = local, Bit 2 = can print — 0x05 covers the basics
@@ -593,9 +752,15 @@ class IPPRequestHandler(BaseHTTPRequestHandler):
             self._send_ipp_error(req_id, IPP_STATUS_INTERNAL_ERROR)
             return
 
+        # Convert Apple Raster (URF) to PDF — Windows can't print URF natively.
+        spool_path = tmp_path
+        if ext == ".urf":
+            spool_path = convert_urf_to_pdf(tmp_path)
+            logger.info("Spool path after conversion: %s", spool_path)
+
         # Spool
         try:
-            spool_to_printer(tmp_path, self.printer_name)
+            spool_to_printer(spool_path, self.printer_name)
         except Exception:
             logger.exception("Spooling failed")
             self._send_ipp_error(req_id, IPP_STATUS_INTERNAL_ERROR)
@@ -723,20 +888,30 @@ class MDNSAdvertiser:
         service_name = f"{safe_name}.{IPP_SERVICE_TYPE}"
 
         # TXT record properties expected by AirPrint clients.
+        # Key references:
+        #   - Apple TN2078 (Bonjour Printing Specification)
+        #   - RFC 8011 (IPP/2.0)
         txt_props = {
             "txtvers": "1",
             "qtotal": "1",
             "rp": "ipp/print",                   # resource path
             "ty": self._printer_name,             # human-readable type
             "product": "(AirPrint Bridge)",
-            "pdl": "application/pdf,image/jpeg,image/png",
+            # iOS requires image/urf in the PDL list for AirPrint.
+            "pdl": "application/pdf,image/urf,image/jpeg,image/png",
             "Color": "F",                         # F=monochrome, T=color
             "Duplex": "F",
             "adminurl": f"http://{self._host_ip}:{self._port}/",
             "priority": "50",
-            "URF": "none",                        # required key, "none" is acceptable
+            # URF capability string — iOS silently drops printers with
+            # URF=none.  Provide a minimal but valid capability set.
+            "URF": "W8,SRGB24,V1.4,RS300-600,DM1",
             "TLS": "none",
         }
+
+        # The _universal subtype is CRITICAL for AirPrint discovery.
+        # Without it, iOS will not show the printer in the print dialog.
+        airprint_subtype = f"_universal._sub.{IPP_SERVICE_TYPE}"
 
         self._info = ServiceInfo(
             type_=IPP_SERVICE_TYPE,
@@ -745,6 +920,7 @@ class MDNSAdvertiser:
             port=self._port,
             properties=txt_props,
             server=f"{safe_name}.local.",
+            subtypes=[airprint_subtype],
         )
         self._zc = Zeroconf()
         self._zc.register_service(self._info)
