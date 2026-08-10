@@ -682,12 +682,35 @@ class IPPRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: object) -> None:  # noqa: D401
         logger.info("HTTP  %s  %s", self.address_string(), fmt % args)
 
+    # Support HTTP/1.1 so that we can handle Expect: 100-continue and Chunked transfer
+    protocol_version = "HTTP/1.1"
+
     # ------------------------------------------------------------------ #
     # POST — the only verb iOS / Android use for IPP                      #
     # ------------------------------------------------------------------ #
     def do_POST(self) -> None:  # noqa: N802
-        content_length = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(content_length)
+        logger.info("Headers received from %s:\n%s", self.client_address[0], self.headers)
+        
+        # Handle chunked transfer encoding (common in iOS AirPrint for large jobs)
+        if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
+            logger.info("Client is using chunked transfer encoding!")
+            raw = bytearray()
+            while True:
+                line = self.rfile.readline().strip()
+                if not line:
+                    continue
+                chunk_size = int(line, 16)
+                if chunk_size == 0:
+                    self.rfile.readline()  # Read trailing \r\n
+                    break
+                raw.extend(self.rfile.read(chunk_size))
+                self.rfile.readline()  # Read trailing \r\n
+            raw = bytes(raw)
+            content_length = len(raw)
+        else:
+            content_length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(content_length)
+
         logger.info(
             "POST %s  Content-Length=%d  from %s",
             self.path,
@@ -695,7 +718,7 @@ class IPPRequestHandler(BaseHTTPRequestHandler):
             self.client_address[0],
         )
 
-        if content_length < 8:
+        if len(raw) < 8:
             self._send_ipp_error(0, IPP_STATUS_BAD_REQUEST)
             return
 
@@ -917,6 +940,7 @@ class MDNSAdvertiser:
         port: int = IPP_PORT,
     ) -> None:
         self._zc: Optional[Zeroconf] = None
+        self._zc_subtype: Optional[Zeroconf] = None
         self._info: Optional[ServiceInfo] = None
         self._subtype_info: Optional[ServiceInfo] = None
         self._printer_name = printer_name
@@ -937,21 +961,29 @@ class MDNSAdvertiser:
         # Key references:
         #   - Apple TN2078 (Bonjour Printing Specification)
         #   - RFC 8011 (IPP/2.0)
+        # iOS requires image/urf in the PDL list for AirPrint.
+        # It also requires a UUID that perfectly matches the IPP response.
+        import hashlib
+        uuid_hex = hashlib.md5(self._printer_name.encode()).hexdigest()
+        printer_uuid_str = (
+            f"{uuid_hex[:8]}-{uuid_hex[8:12]}-"
+            f"{uuid_hex[12:16]}-{uuid_hex[16:20]}-{uuid_hex[20:]}"
+        )
+
         txt_props = {
             "txtvers": "1",
             "qtotal": "1",
-            "rp": "ipp/print",                   # resource path
-            "ty": self._printer_name,             # human-readable type
-            "product": "(AirPrint Bridge)",
-            # iOS requires image/urf in the PDL list for AirPrint.
+            "rp": "ipp/print",
+            "ty": self._printer_name,
+            "product": f"({self._printer_name})",
+            "note": "Windows Print Server",
             "pdl": "application/pdf,image/urf,image/jpeg,image/png",
-            "Color": "F",                         # F=monochrome, T=color
+            "Color": "T",                         # Must match SRGB24 in URF
             "Duplex": "F",
             "adminurl": f"http://{self._host_ip}:{self._port}/",
             "priority": "50",
-            # URF capability string — iOS silently drops printers with
-            # URF=none.  Provide a minimal but valid capability set.
             "URF": "W8,SRGB24,V1.4,RS300-600,DM1",
+            "UUID": printer_uuid_str,
             "TLS": "none",
         }
 
@@ -965,7 +997,9 @@ class MDNSAdvertiser:
             server=f"{safe_name}.local.",
         )
 
-        self._zc = Zeroconf()
+        # Force Zeroconf to bind specifically to the Wi-Fi interface!
+        # Windows often routes multicast traffic to the Ethernet/VPN adapter by default.
+        self._zc = Zeroconf(interfaces=[self._host_ip])
         self._zc.register_service(self._info, strict=False)
         logger.info(
             "mDNS service registered: %s  (IP=%s  port=%d)",
@@ -976,41 +1010,53 @@ class MDNSAdvertiser:
 
         # --- AirPrint subtype: _universal._sub._ipp._tcp.local. ---
         airprint_subtype = f"_universal._sub.{IPP_SERVICE_TYPE}"
-        subtype_service_name = f"{safe_name}.{airprint_subtype}"
 
         self._subtype_info = ServiceInfo(
             type_=airprint_subtype,
-            name=subtype_service_name,
+            name=service_name,  # MUST use the primary name here!
             addresses=[socket.inet_aton(self._host_ip)],
             port=self._port,
             properties=txt_props,
             server=f"{safe_name}.local.",
         )
         try:
-            self._zc.register_service(self._subtype_info, strict=False)
-            logger.info("mDNS subtype registered: %s", subtype_service_name)
+            self._zc_subtype = Zeroconf(interfaces=[self._host_ip])
+            self._zc_subtype.register_service(self._subtype_info, strict=False)
+            logger.info("mDNS subtype registered: %s", airprint_subtype)
         except Exception:
             logger.exception("Failed to register _universal subtype")
 
 
     def unregister(self) -> None:
         """Remove the service from the LAN."""
-        if self._zc:
+        if self._zc or self._zc_subtype:
             logger.info("Unregistering mDNS service …")
-            for info in (self._subtype_info, self._info):
-                if info is not None:
-                    try:
-                        self._zc.unregister_service(info)
-                    except Exception:
-                        logger.exception(
-                            "Error unregistering mDNS service: %s",
-                            info.name if info else "unknown",
-                        )
+            
+            if self._subtype_info is not None and self._zc_subtype is not None:
+                try:
+                    self._zc_subtype.unregister_service(self._subtype_info)
+                except Exception:
+                    pass
+            
+            if self._info is not None and self._zc is not None:
+                try:
+                    self._zc.unregister_service(self._info)
+                except Exception:
+                    pass
+
             try:
-                self._zc.close()
+                if self._zc:
+                    self._zc.close()
             except Exception:
-                logger.exception("Error closing Zeroconf")
+                pass
+            try:
+                if self._zc_subtype:
+                    self._zc_subtype.close()
+            except Exception:
+                pass
+
             self._zc = None
+            self._zc_subtype = None
             self._info = None
             self._subtype_info = None
             logger.info("mDNS service unregistered.")
