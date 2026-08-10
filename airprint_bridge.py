@@ -863,6 +863,9 @@ class MDNSAdvertiser:
     Registers (and later unregisters) an ``_ipp._tcp.local.`` service
     using the ``zeroconf`` library so that AirPrint / IPP Everywhere
     clients discover the printer automatically.
+
+    Also registers the ``_universal._sub._ipp._tcp.local.`` subtype
+    which iOS requires to classify the service as AirPrint-compatible.
     """
 
     def __init__(
@@ -873,6 +876,7 @@ class MDNSAdvertiser:
     ) -> None:
         self._zc: Optional[Zeroconf] = None
         self._info: Optional[ServiceInfo] = None
+        self._subtype_info: Optional[ServiceInfo] = None
         self._printer_name = printer_name
         self._host_ip = host_ip
         self._port = port
@@ -909,10 +913,7 @@ class MDNSAdvertiser:
             "TLS": "none",
         }
 
-        # The _universal subtype is CRITICAL for AirPrint discovery.
-        # Without it, iOS will not show the printer in the print dialog.
-        airprint_subtype = f"_universal._sub.{IPP_SERVICE_TYPE}"
-
+        # --- Primary service: _ipp._tcp.local. ---
         self._info = ServiceInfo(
             type_=IPP_SERVICE_TYPE,
             name=service_name,
@@ -920,10 +921,10 @@ class MDNSAdvertiser:
             port=self._port,
             properties=txt_props,
             server=f"{safe_name}.local.",
-            subtypes=[airprint_subtype],
         )
+
         self._zc = Zeroconf()
-        self._zc.register_service(self._info)
+        self._zc.register_service(self._info, strict=False)
         logger.info(
             "mDNS service registered: %s  (IP=%s  port=%d)",
             service_name,
@@ -931,20 +932,54 @@ class MDNSAdvertiser:
             self._port,
         )
 
+        # --- AirPrint subtype: _universal._sub._ipp._tcp.local. ---
+        # iOS filters AirPrint printers by this DNS-SD subtype PTR record.
+        # We register a second ServiceInfo with the subtype as type_ and
+        # the same instance name — this creates the required PTR record.
+        airprint_subtype = f"_universal._sub.{IPP_SERVICE_TYPE}"
+        subtype_service_name = f"{safe_name}.{airprint_subtype}"
+
+        self._subtype_info = ServiceInfo(
+            type_=airprint_subtype,
+            name=subtype_service_name,
+            addresses=[socket.inet_aton(self._host_ip)],
+            port=self._port,
+            properties=txt_props,
+            server=f"{safe_name}.local.",
+        )
+        try:
+            self._zc.register_service(self._subtype_info, strict=False)
+            logger.info(
+                "mDNS subtype registered: %s", subtype_service_name
+            )
+        except Exception:
+            # Non-fatal — Android will still work; only iOS may not.
+            logger.exception(
+                "Failed to register _universal subtype (AirPrint may "
+                "not be visible on iOS)"
+            )
+            self._subtype_info = None
+
     def unregister(self) -> None:
         """Remove the service from the LAN."""
-        if self._zc and self._info:
+        if self._zc:
             logger.info("Unregistering mDNS service …")
-            try:
-                self._zc.unregister_service(self._info)
-            except Exception:
-                logger.exception("Error unregistering mDNS service")
+            for info in (self._subtype_info, self._info):
+                if info is not None:
+                    try:
+                        self._zc.unregister_service(info)
+                    except Exception:
+                        logger.exception(
+                            "Error unregistering mDNS service: %s",
+                            info.name if info else "unknown",
+                        )
             try:
                 self._zc.close()
             except Exception:
                 logger.exception("Error closing Zeroconf")
             self._zc = None
             self._info = None
+            self._subtype_info = None
             logger.info("mDNS service unregistered.")
 
 
