@@ -312,27 +312,71 @@ def get_default_printer() -> str:
 def spool_to_printer(file_path: str, printer_name: str) -> None:
     """
     Send *file_path* to the Windows print queue of *printer_name*.
-
-    Uses ``ShellExecute`` with the ``"printto"`` verb, which delegates
-    rendering to whichever application is registered for the file type
-    (e.g. Microsoft Print to PDF, Photos, SumatraPDF, etc.).
+    
+    Uses PyMuPDF to rasterize the PDF and win32ui to send it directly
+    to the printer's Device Context (DC). This bypasses the need for
+    unreliable ShellExecute headless verbs on Windows 10/11.
     """
-    logger.info(
-        "Spooling '%s' to printer '%s'", file_path, printer_name
-    )
+    logger.info("Spooling '%s' to printer '%s'", file_path, printer_name)
+    
     try:
-        win32api.ShellExecute(
-            0,           # hWnd  – no parent window
-            "printto",   # verb
-            file_path,   # file to print
-            f'"{printer_name}"',  # printer name (quoted for spaces)
-            ".",         # working directory
-            0,           # SW_HIDE – invisible window
-        )
-        logger.info("ShellExecute printto succeeded for '%s'", file_path)
-    except Exception:
-        logger.exception("ShellExecute printto FAILED for '%s'", file_path)
+        import win32print
+        import win32ui
+        import win32con
+        import pythoncom
+        import fitz
+        from PIL import Image, ImageWin
+    except ImportError as e:
+        logger.error("Missing dependency for printing: %s", e)
         raise
+
+    pythoncom.CoInitialize()
+    try:
+        hprinter = win32print.OpenPrinter(printer_name)
+        try:
+            hdc = win32ui.CreateDC()
+            hdc.CreatePrinterDC(printer_name)
+
+            printer_dpi_x = hdc.GetDeviceCaps(win32con.LOGPIXELSX)
+            printer_dpi_y = hdc.GetDeviceCaps(win32con.LOGPIXELSY)
+
+            hdc.StartDoc(file_path)
+
+            pdf_doc = fitz.open(file_path)
+            for page_num in range(len(pdf_doc)):
+                logger.info("Rendering page %d/%d...", page_num + 1, len(pdf_doc))
+                hdc.StartPage()
+                
+                page = pdf_doc.load_page(page_num)
+                
+                # PyMuPDF default DPI is 72. Calculate zoom to match printer DPI.
+                zoom_x = printer_dpi_x / 72.0
+                zoom_y = printer_dpi_y / 72.0
+                matrix = fitz.Matrix(zoom_x, zoom_y)
+                
+                # Render to pixmap
+                pix = page.get_pixmap(matrix=matrix, alpha=False)
+                
+                # Convert to PIL Image
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                
+                # Draw to DC
+                dib = ImageWin.Dib(img)
+                dib.draw(hdc.GetHandleOutput(), (0, 0, pix.width, pix.height))
+                
+                hdc.EndPage()
+                
+            pdf_doc.close()
+            hdc.EndDoc()
+            hdc.DeleteDC()
+            logger.info("Successfully spooled to printer.")
+        finally:
+            win32print.ClosePrinter(hprinter)
+    except Exception:
+        logger.exception("win32ui printing FAILED for '%s'", file_path)
+        raise
+    finally:
+        pythoncom.CoUninitialize()
 
 
 # ---------------------------------------------------------------------------
