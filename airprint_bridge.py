@@ -410,6 +410,8 @@ def build_ipp_response(
     request_id: int,
     status_code: int,
     extra_groups: bytes = b"",
+    version_major: int = 2,
+    version_minor: int = 0,
 ) -> bytes:
     """
     Assemble a minimal valid IPP response.
@@ -423,12 +425,17 @@ def build_ipp_response(
     extra_groups : bytes
         Pre-encoded attribute groups to append between the mandatory
         operation-attributes group and the end-of-attributes tag.
+    version_major : int
+        IPP major version — should echo the client's request version.
+    version_minor : int
+        IPP minor version — should echo the client's request version.
     """
     # ---- header (8 bytes) ----
+    # Per RFC 8011 §4.1.8, the response version MUST match the request.
     header = struct.pack(
         "!BBHi",
-        IPP_VERSION_MAJOR,
-        IPP_VERSION_MINOR,
+        version_major,
+        version_minor,
         status_code,
         request_id,
     )
@@ -451,16 +458,18 @@ def build_ipp_response(
     return header + body
 
 
-def parse_ipp_request(raw: bytes) -> Tuple[int, int, int]:
+def parse_ipp_request(raw: bytes) -> Tuple[int, int, int, int, int]:
     """
     Parse the 8-byte IPP header.
 
-    Returns ``(version_major << 8 | version_minor, operation_id, request_id)``.
+    Returns ``(version_major, version_minor, operation_id, request_id)``.
+    The combined version is also returned for back-compat logging.
+    Returns a 5-tuple: ``(version_combined, op_id, req_id, ver_major, ver_minor)``.
     """
     if len(raw) < 8:
         raise ValueError("IPP payload too short (< 8 bytes)")
     ver_major, ver_minor, op_id, req_id = struct.unpack("!BBHi", raw[:8])
-    return (ver_major << 8 | ver_minor), op_id, req_id
+    return (ver_major << 8 | ver_minor), op_id, req_id, ver_major, ver_minor
 
 
 def extract_document_data(raw: bytes) -> bytes:
@@ -529,6 +538,13 @@ def _build_printer_attributes(
     attrs += _encode_text_attribute(IPP_TAG_TEXT, "printer-location", "Local Network")
     attrs += _encode_text_attribute(IPP_TAG_TEXT, "printer-make-and-model", "AirPrint Bridge Printer")
 
+    # --- AirPrint feature declaration (CRITICAL for iOS) ---
+    # iOS uses this attribute to confirm AirPrint capability.
+    # Without "airprint-1.8", iOS silently rejects the printer.
+    attrs += _encode_text_attribute(
+        IPP_TAG_KEYWORD, "ipp-features-supported", "airprint-1.8"
+    )
+
     # --- State ---
     # 3 = idle, 4 = processing, 5 = stopped
     attrs += _encode_enum_attribute("printer-state", 3)
@@ -566,6 +582,15 @@ def _build_printer_attributes(
     attrs += _encode_text_attribute(IPP_TAG_KEYWORD, "media-default", "iso_a4_210x297mm")
     attrs += _encode_text_attribute(IPP_TAG_KEYWORD, "media-supported", "iso_a4_210x297mm")
     attrs += _encode_additional_value(IPP_TAG_KEYWORD, b"na_letter_8.5x11in")
+
+    # media-ready — iOS 16+ requires this to show the printer.
+    attrs += _encode_text_attribute(IPP_TAG_KEYWORD, "media-ready", "iso_a4_210x297mm")
+    attrs += _encode_additional_value(IPP_TAG_KEYWORD, b"na_letter_8.5x11in")
+
+    # media-col-supported — iOS 16+ checks for this collection attribute.
+    attrs += _encode_text_attribute(IPP_TAG_KEYWORD, "media-col-supported", "media-size")
+    attrs += _encode_additional_value(IPP_TAG_KEYWORD, b"media-type")
+    attrs += _encode_additional_value(IPP_TAG_KEYWORD, b"media-source")
 
     # Sides (duplex) — we report simplex only for safety
     attrs += _encode_text_attribute(IPP_TAG_KEYWORD, "sides-default", "one-sided")
@@ -675,24 +700,25 @@ class IPPRequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            _version, op_id, req_id = parse_ipp_request(raw)
+            _version, op_id, req_id, ver_maj, ver_min = parse_ipp_request(raw)
         except ValueError as exc:
             logger.warning("Malformed IPP header: %s", exc)
             self._send_ipp_error(0, IPP_STATUS_BAD_REQUEST)
             return
 
         logger.info(
-            "IPP operation=0x%04X  request-id=%d", op_id, req_id
+            "IPP %d.%d  operation=0x%04X  request-id=%d",
+            ver_maj, ver_min, op_id, req_id,
         )
 
         if op_id == IPP_OP_PRINT_JOB:
-            self._handle_print_job(raw, req_id)
+            self._handle_print_job(raw, req_id, ver_maj, ver_min)
         elif op_id == IPP_OP_VALIDATE_JOB:
-            self._handle_validate_job(req_id)
+            self._handle_validate_job(req_id, ver_maj, ver_min)
         elif op_id == IPP_OP_GET_PRINTER_ATTRIBUTES:
-            self._handle_get_printer_attributes(req_id)
+            self._handle_get_printer_attributes(req_id, ver_maj, ver_min)
         elif op_id == IPP_OP_GET_JOBS:
-            self._handle_get_jobs(req_id)
+            self._handle_get_jobs(req_id, ver_maj, ver_min)
         else:
             logger.warning("Unsupported IPP operation 0x%04X", op_id)
             self._send_ipp_error(req_id, IPP_STATUS_BAD_REQUEST)
@@ -722,7 +748,9 @@ class IPPRequestHandler(BaseHTTPRequestHandler):
     # IPP operation handlers                                              #
     # ------------------------------------------------------------------ #
 
-    def _handle_print_job(self, raw: bytes, req_id: int) -> None:
+    def _handle_print_job(
+        self, raw: bytes, req_id: int, ver_maj: int, ver_min: int,
+    ) -> None:
         """Extract the document payload and spool it."""
         doc_data = extract_document_data(raw)
         if not doc_data:
@@ -777,29 +805,43 @@ class IPPRequestHandler(BaseHTTPRequestHandler):
         job_attrs += _encode_enum_attribute("job-state", 9)  # 9 = completed
 
         response = build_ipp_response(
-            req_id, IPP_STATUS_OK, extra_groups=job_attrs
+            req_id, IPP_STATUS_OK, extra_groups=job_attrs,
+            version_major=ver_maj, version_minor=ver_min,
         )
         self._send_raw_ipp(response)
         logger.info("Print-Job #%d accepted and spooled successfully", req_id)
 
-    def _handle_validate_job(self, req_id: int) -> None:
+    def _handle_validate_job(
+        self, req_id: int, ver_maj: int, ver_min: int,
+    ) -> None:
         """Respond to Validate-Job with successful-ok."""
-        response = build_ipp_response(req_id, IPP_STATUS_OK)
+        response = build_ipp_response(
+            req_id, IPP_STATUS_OK,
+            version_major=ver_maj, version_minor=ver_min,
+        )
         self._send_raw_ipp(response)
         logger.info("Validate-Job #%d → successful-ok", req_id)
 
-    def _handle_get_printer_attributes(self, req_id: int) -> None:
+    def _handle_get_printer_attributes(
+        self, req_id: int, ver_maj: int, ver_min: int,
+    ) -> None:
         """Return a rich set of printer attributes for discovery."""
         attrs = _build_printer_attributes(self.printer_name, self.host_ip)
         response = build_ipp_response(
-            req_id, IPP_STATUS_OK, extra_groups=attrs
+            req_id, IPP_STATUS_OK, extra_groups=attrs,
+            version_major=ver_maj, version_minor=ver_min,
         )
         self._send_raw_ipp(response)
         logger.info("Get-Printer-Attributes #%d → sent attributes", req_id)
 
-    def _handle_get_jobs(self, req_id: int) -> None:
+    def _handle_get_jobs(
+        self, req_id: int, ver_maj: int, ver_min: int,
+    ) -> None:
         """Return an empty job list (we don't queue)."""
-        response = build_ipp_response(req_id, IPP_STATUS_OK)
+        response = build_ipp_response(
+            req_id, IPP_STATUS_OK,
+            version_major=ver_maj, version_minor=ver_min,
+        )
         self._send_raw_ipp(response)
         logger.info("Get-Jobs #%d → empty list", req_id)
 
