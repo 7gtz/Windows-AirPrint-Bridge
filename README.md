@@ -10,6 +10,14 @@ A production-ready, standalone Python script that acts as an AirPrint and IPP (I
 - **Robust Headless PDF Rendering:** Avoids unreliable Windows shell commands (like `ShellExecute printto`) which break when Microsoft Edge is the default PDF viewer. Instead, it uses `PyMuPDF` to rasterize the PDF in-memory and `win32ui` to send it directly to the printer's Device Context (DC).
 - **Scale-to-Fit:** Automatically detects your printer's exact printable area (DPI and physical dimensions) and mathematically scales the document to fit perfectly and center on the page, preventing cropping.
 
+## Supported Devices
+
+By strictly adhering to Apple's latest AirPrint requirements, this script achieves broad backward compatibility across almost all platforms that support IPP:
+
+- **iOS & iPadOS:** Supports virtually all versions from **iOS 4.2 up through iOS 18+**. It passes the stringent zero-configuration checks introduced in iOS 16–18 while remaining completely compatible with older devices.
+- **macOS:** Natively supported via Bonjour discovery.
+- **Android:** Supported natively via the Android Default Print Service (IPP Everywhere).
+
 ## Prerequisites
 
 The script requires **Python 3.8+** and a Windows operating system.
