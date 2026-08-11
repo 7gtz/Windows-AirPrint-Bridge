@@ -37,7 +37,7 @@ pip install zeroconf pymupdf pillow pywin32
 
 The easiest way to install and run the AirPrint Bridge is using the provided Windows Installer. This will automatically install the bridge as a background Windows Service that starts when your PC boots.
 
-1. Download the latest `AirPrintBridge_Setup_vX.X.X.exe` from the Releases page.
+1. Download the latest `AirPrintBridge_Setup_v1.0.1.exe` from the Releases page.
 2. Run the installer and follow the prompts.
 3. The AirPrint Bridge service will automatically start in the background.
 
@@ -70,7 +70,12 @@ python diagnose.py
   $pidToKill = (netstat -ano | Select-String ":631" | Select-String "LISTENING").Line.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)[-1]; if ($pidToKill) { Stop-Process -Id $pidToKill -Force }
   ```
 - **Different Subnets:** Your mobile device and Windows PC must be on the exact same local Wi-Fi subnet for mDNS multicast packets to reach the device.
-- **Virtual Printers (e.g. RustDesk, PDF Printers):** If the service is running but printing does nothing (or you see a virtual printer name), a program likely changed your Windows Default Printer. The bridge strictly uses your default printer. Go to **Windows Settings > Printers & scanners**, turn **off** "Let Windows manage my default printer", and manually set your physical printer as the default.
+- **Virtual Printers (e.g. RustDesk, PDF Printers):** If the service is running but printing does nothing (or you see a virtual printer name), a program likely changed your Windows Default Printer. The bridge strictly uses your default printer. To fix this:
+  1. Open the Windows Settings app.
+  2. Go to **Bluetooth & devices > Printers & scanners**.
+  3. Under "Printer preferences", make sure **"Let Windows manage my default printer"** is turned **OFF**.
+  4. Click on your actual, physical printer in the list.
+  5. Click the **"Set as default"** button at the top.
 
 ## How It Works (Technical Architecture)
 
