@@ -16,7 +16,7 @@ Architecture
 
 Author : Salman Asmat
 Created: 2026-08-10
-License: MIT
+License: GPL-3.0
 """
 
 from __future__ import annotations
