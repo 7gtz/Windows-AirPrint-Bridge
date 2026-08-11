@@ -1,3 +1,9 @@
+## v1.0.1 - 2026-08-11
+
+### 🐛 Bug Fixes
+- **Interactive Mode Fallback**: Fixed an issue (Error 1063) where running the standalone executable directly would crash. It now gracefully falls back to interactive debugging mode if it's not launched by the Service Control Manager.
+- **Documentation**: Added troubleshooting steps for users with virtual printers (like RustDesk) that take over the Windows Default Printer setting, causing jobs to print to nowhere.
+
 ## v1.0.0 - 2026-08-10
 
 ### 🚀 New Features

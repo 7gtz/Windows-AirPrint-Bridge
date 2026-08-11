@@ -1199,11 +1199,26 @@ class AirPrintBridgeService(win32serviceutil.ServiceFramework):
 
 
 if __name__ == "__main__":
+    import pywintypes
     if len(sys.argv) == 1:
-        # Run natively as a Windows Service
-        servicemanager.Initialize()
-        servicemanager.PrepareToHostSingle(AirPrintBridgeService)
-        servicemanager.StartServiceCtrlDispatcher()
+        try:
+            # Run natively as a Windows Service
+            servicemanager.Initialize()
+            servicemanager.PrepareToHostSingle(AirPrintBridgeService)
+            servicemanager.StartServiceCtrlDispatcher()
+        except pywintypes.error as e:
+            if e.winerror == 1063:
+                print("Running interactively (not started by Service Control Manager)...")
+                shutdown_event = threading.Event()
+                def _shutdown(signum=None, frame=None):
+                    shutdown_event.set()
+                signal.signal(signal.SIGINT, _shutdown)
+                signal.signal(signal.SIGTERM, _shutdown)
+                if hasattr(signal, "SIGBREAK"):
+                    signal.signal(signal.SIGBREAK, _shutdown)
+                main(shutdown_event)
+            else:
+                raise
     else:
         # Command-line usage
         if sys.argv[1] == 'debug':

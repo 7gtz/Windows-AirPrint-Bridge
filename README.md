@@ -70,6 +70,7 @@ python diagnose.py
   $pidToKill = (netstat -ano | Select-String ":631" | Select-String "LISTENING").Line.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)[-1]; if ($pidToKill) { Stop-Process -Id $pidToKill -Force }
   ```
 - **Different Subnets:** Your mobile device and Windows PC must be on the exact same local Wi-Fi subnet for mDNS multicast packets to reach the device.
+- **Virtual Printers (e.g. RustDesk, PDF Printers):** If the service is running but printing does nothing (or you see a virtual printer name), a program likely changed your Windows Default Printer. The bridge strictly uses your default printer. Go to **Windows Settings > Printers & scanners**, turn **off** "Let Windows manage my default printer", and manually set your physical printer as the default.
 
 ## How It Works (Technical Architecture)
 
