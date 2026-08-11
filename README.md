@@ -1,5 +1,10 @@
 # Windows AirPrint Bridge
 
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Platform: Windows](https://img.shields.io/badge/platform-Windows-lightgray.svg)](https://www.microsoft.com/windows)
+[![GitHub release](https://img.shields.io/github/v/release/salmanasmat/Windows-AirPrint-Bridge?color=brightgreen)](https://github.com/salmanasmat/Windows-AirPrint-Bridge/releases/latest)
+[![GitHub All Releases](https://img.shields.io/github/downloads/salmanasmat/Windows-AirPrint-Bridge/total)](https://github.com/salmanasmat/Windows-AirPrint-Bridge/releases)
+
 A production-ready, standalone Python script that acts as an AirPrint and IPP (Internet Printing Protocol) bridge server. It enables iOS (AirPrint) and Android (IPP Everywhere) devices connected to the same Wi-Fi network to print directly to a PC-connected printer natively—without requiring any third-party mobile apps.
 
 ## Features
