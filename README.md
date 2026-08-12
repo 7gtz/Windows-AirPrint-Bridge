@@ -28,7 +28,7 @@ By strictly adhering to Apple's latest AirPrint requirements, this script achiev
 
 The easiest way to install and run AirPrint Bridge on Windows is using the pre-compiled installer. **No Python installation or dependencies are required.** Everything is bundled into a self-contained background Windows Service that automatically starts when your PC boots.
 
-1. Download the latest `AirPrintBridge_Setup_v1.1.0.exe` from the [Releases page](https://github.com/salmanasmat/Windows-AirPrint-Bridge/releases/latest).
+1. Download the latest `AirPrintBridge_Setup_v1.1.1.exe` from the [Releases page](https://github.com/salmanasmat/Windows-AirPrint-Bridge/releases/latest).
 2. Run the installer as Administrator and follow the setup wizard.
 3. The AirPrint Bridge service will automatically start in the background.
 4. On your iOS or Android device (connected to the same Wi-Fi network), open a document or photo, tap **Print**, and select your Windows printer.

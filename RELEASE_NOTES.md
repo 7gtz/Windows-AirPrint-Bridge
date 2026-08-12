@@ -1,3 +1,10 @@
+## v1.1.1 - 2026-08-12
+
+### 🌐 Multi-PC Network & Display Enhancements
+- **Multi-PC Network Identification:** Dynamic printer naming incorporating host PC name and printer name (`Printer (PC-NAME)`).
+- **Unique mDNS UUIDs:** Machine-specific mDNS UUID generation (`uuid5` on `Printer@Hostname`) preventing iOS/AirPrint device collision across multiple PCs running the bridge on the same LAN.
+- **Enhanced IPP & mDNS Attributes:** Updated `printer-make-and-model`, `printer-info`, `printer-location`, and mDNS TXT `note` fields for clear printer discovery UI on iOS, macOS, and Android.
+
 ## v1.1.0 - 2026-08-12
 
 ### 🛠️ Windows Service & Compatibility Fixes
