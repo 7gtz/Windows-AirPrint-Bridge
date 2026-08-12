@@ -65,7 +65,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-VERSION: str = "1.1.0"
+VERSION: str = "1.1.1"
 IPP_PORT: int = 631
 IPP_SERVICE_TYPE: str = "_ipp._tcp.local."
 
@@ -595,6 +595,8 @@ def _build_printer_attributes(
     Return the pre-encoded *printer-attributes* group that iOS / Android
     require in order to accept the printer as AirPrint-compatible.
     """
+    hostname = socket.gethostname()
+    display_name = f"{printer_name} ({hostname})"
     printer_uri = f"ipp://{host_ip}:{IPP_PORT}/ipp/print"
     attrs = struct.pack("!B", IPP_TAG_PRINTER)
 
@@ -603,9 +605,9 @@ def _build_printer_attributes(
     attrs += _encode_text_attribute(IPP_TAG_URISCHEME, "uri-security-supported", "none")
     attrs += _encode_text_attribute(IPP_TAG_URISCHEME, "uri-authentication-supported", "none")
     attrs += _encode_text_attribute(IPP_TAG_NAME, "printer-name", printer_name)
-    attrs += _encode_text_attribute(IPP_TAG_TEXT, "printer-info", f"AirPrint Bridge – {printer_name}")
-    attrs += _encode_text_attribute(IPP_TAG_TEXT, "printer-location", "Local Network")
-    attrs += _encode_text_attribute(IPP_TAG_TEXT, "printer-make-and-model", "AirPrint Bridge Printer")
+    attrs += _encode_text_attribute(IPP_TAG_TEXT, "printer-info", display_name)
+    attrs += _encode_text_attribute(IPP_TAG_TEXT, "printer-location", f"PC: {hostname}")
+    attrs += _encode_text_attribute(IPP_TAG_TEXT, "printer-make-and-model", display_name)
 
     # --- AirPrint feature declaration (CRITICAL for iOS) ---
     # iOS uses this attribute to confirm AirPrint capability.
@@ -1058,29 +1060,35 @@ class MDNSAdvertiser:
 
     def register(self) -> None:
         """Broadcast the service on the LAN."""
-        # Sanitise the printer name for DNS labels (replace spaces, limit len)
-        safe_name = (
-            self._printer_name.replace(" ", "_")
-            .replace("/", "_")
-            .replace("\\", "_")[:60]
-        )
-        service_name = f"{safe_name}.{IPP_SERVICE_TYPE}"
+        hostname = socket.gethostname()
+        display_name = f"{self._printer_name} ({hostname})"
 
-        # TXT record properties expected by AirPrint clients.
-        # Key references:
-        #   - Apple TN2078 (Bonjour Printing Specification)
-        #   - RFC 8011 (IPP/2.0)
-        # iOS requires image/urf in the PDL list for AirPrint.
-        # It also requires a UUID that perfectly matches the IPP response.
-        printer_uuid_str = str(uuid.uuid5(uuid.NAMESPACE_DNS, self._printer_name))
+        # Clean display name for mDNS instance label (allow spaces, escape dot/slashes, limit length)
+        clean_instance = (
+            display_name.replace("/", "_")
+            .replace("\\", "_")
+            .replace(".", "_")[:60]
+        )
+        service_name = f"{clean_instance}.{IPP_SERVICE_TYPE}"
+
+        # Clean host name for target DNS host (must be a valid single-label DNS host)
+        safe_host = (
+            hostname.replace(" ", "-")
+            .replace("/", "-")
+            .replace("\\", "-")
+            .replace(".", "-")[:60]
+        )
+
+        # Unique UUID per printer + machine so multiple PCs don't collide on AirPrint clients
+        printer_uuid_str = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{self._printer_name}@{hostname}"))
 
         txt_props = {
             "txtvers": "1",
             "qtotal": "1",
             "rp": "ipp/print",
-            "ty": self._printer_name,
+            "ty": display_name,
             "product": f"({self._printer_name})",
-            "note": "Windows Print Server",
+            "note": f"AirPrint Bridge on {hostname}",
             "pdl": "application/pdf,image/urf,image/jpeg,image/png",
             "Color": "T",                         # Must match SRGB24 in URF
             "Duplex": "F",
@@ -1098,7 +1106,7 @@ class MDNSAdvertiser:
             addresses=[socket.inet_aton(self._host_ip)],
             port=self._port,
             properties=txt_props,
-            server=f"{safe_name}.local.",
+            server=f"{safe_host}.local.",
         )
 
         # Force Zeroconf to bind specifically to the Wi-Fi interface!
@@ -1121,7 +1129,7 @@ class MDNSAdvertiser:
             addresses=[socket.inet_aton(self._host_ip)],
             port=self._port,
             properties=txt_props,
-            server=f"{safe_name}.local.",
+            server=f"{safe_host}.local.",
         )
         try:
             self._zc_subtype = Zeroconf(interfaces=[self._host_ip])
