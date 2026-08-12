@@ -24,25 +24,31 @@ By strictly adhering to Apple's latest AirPrint requirements, this script achiev
 - **macOS:** Natively supported via Bonjour discovery.
 - **Android:** Supported natively via the Android Default Print Service (IPP Everywhere).
 
-## Prerequisites
+## Installation (Recommended)
 
-The script requires **Python 3.8+** and a Windows operating system.
+The easiest way to install and run AirPrint Bridge on Windows is using the pre-compiled installer. **No Python installation or dependencies are required.** Everything is bundled into a self-contained background Windows Service that automatically starts when your PC boots.
 
-Install the required Python packages:
+1. Download the latest `AirPrintBridge_Setup_v1.1.0.exe` from the [Releases page](https://github.com/salmanasmat/Windows-AirPrint-Bridge/releases/latest).
+2. Run the installer as Administrator and follow the setup wizard.
+3. The AirPrint Bridge service will automatically start in the background.
+4. On your iOS or Android device (connected to the same Wi-Fi network), open a document or photo, tap **Print**, and select your Windows printer.
+
+## Development & Manual Setup (Developers)
+
+If you prefer to run from source code or contribute to development:
+
+### Prerequisites
+
+- **Windows OS**
+- **Python 3.8+**
+
+Install required dependencies:
 
 ```powershell
 pip install zeroconf pymupdf pillow pywin32
 ```
 
-## Installation (Recommended)
-
-The easiest way to install and run the AirPrint Bridge is using the provided Windows Installer. This will automatically install the bridge as a background Windows Service that starts when your PC boots.
-
-1. Download the latest `AirPrintBridge_Setup_v1.1.0.exe` from the Releases page.
-2. Run the installer and follow the prompts.
-3. The AirPrint Bridge service will automatically start in the background.
-
-## Manual Installation & Usage (Developers)
+### Running from Source
 
 1. Set the printer you want to share as your **Default Printer** in Windows.
 2. Run the bridge script:
@@ -51,9 +57,19 @@ The easiest way to install and run the AirPrint Bridge is using the provided Win
 python airprint_bridge.py
 ```
 
-3. The server will detect your local IP address and default printer, bind to port `631` (the standard IPP port), and begin broadcasting.
-4. (Optional) To run the script manually as a native Windows Service, use `python airprint_bridge.py install` and `python airprint_bridge.py start`.
-5. On your iOS or Android device (connected to the same Wi-Fi network), open a document or photo, tap **Print**, and your Windows printer should appear in the list.
+3. The server will detect your local IP address and default printer, bind to port `631` (the standard IPP port), and begin broadcasting on your local network.
+
+### Building the Executable & Installer
+
+To build the standalone executable and setup wizard from source:
+
+```powershell
+# 1. Build PyInstaller single-file console executable
+.\build.ps1
+
+# 2. Compile Inno Setup installer wizard (requires Inno Setup 6)
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" .\installer.iss
+```
 
 ## Diagnostics and Troubleshooting
 
