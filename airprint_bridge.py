@@ -22,6 +22,8 @@ License: GPL-3.0
 from __future__ import annotations
 
 import atexit
+import hashlib
+import html
 import logging
 import os
 import signal
@@ -31,6 +33,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Optional, Tuple
@@ -62,6 +65,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+VERSION: str = "1.1.0"
 IPP_PORT: int = 631
 IPP_SERVICE_TYPE: str = "_ipp._tcp.local."
 
@@ -72,8 +76,10 @@ IPP_VERSION_MINOR: int = 1
 # IPP operation IDs we handle
 IPP_OP_PRINT_JOB: int = 0x0002
 IPP_OP_VALIDATE_JOB: int = 0x0004
-IPP_OP_GET_PRINTER_ATTRIBUTES: int = 0x000B
+IPP_OP_CANCEL_JOB: int = 0x0008
+IPP_OP_GET_JOB_ATTRIBUTES: int = 0x0009
 IPP_OP_GET_JOBS: int = 0x000A
+IPP_OP_GET_PRINTER_ATTRIBUTES: int = 0x000B
 
 # IPP status codes
 IPP_STATUS_OK: int = 0x0000
@@ -112,9 +118,14 @@ MAGIC_URF: bytes = b"UNIRAST"   # Apple Raster (URF) format
 # ---------------------------------------------------------------------------
 # Logging setup
 # ---------------------------------------------------------------------------
-LOG_FILE: str = str(
-    Path(__file__).resolve().parent / "airprint_bridge.log"
-)
+# When frozen by PyInstaller, __file__ resolves to a temp _MEIXXXXXX dir.
+# Use the executable's directory instead so logs persist across restarts.
+if getattr(sys, "frozen", False):
+    _app_dir = Path(sys.executable).resolve().parent
+else:
+    _app_dir = Path(__file__).resolve().parent
+
+LOG_FILE: str = str(_app_dir / "airprint_bridge.log")
 
 logger = logging.getLogger("airprint_bridge")
 logger.setLevel(logging.DEBUG)
@@ -565,12 +576,10 @@ def extract_document_data(raw: bytes) -> bytes:
         value_len = struct.unpack("!H", raw[idx:idx + 2])[0]
         idx += 2 + value_len
 
-    # Fallback: brute-force scan for the end-of-attributes tag.
-    # This handles edge cases with malformed attribute encodings.
-    marker = raw.find(b"\x03", 8)
-    if marker != -1:
-        return raw[marker + 1:]
-
+    # Structured walk failed to find end-of-attributes tag.
+    # Do NOT brute-force scan for 0x03 — it can appear inside attribute
+    # values (URIs, text) and would corrupt the document boundary.
+    logger.warning("Structured IPP parse did not find end-of-attributes tag")
     return b""
 
 
@@ -691,14 +700,11 @@ def _build_printer_attributes(
     attrs += _encode_additional_value(IPP_TAG_ENUM, struct.pack("!i", 4))  # normal
     attrs += _encode_additional_value(IPP_TAG_ENUM, struct.pack("!i", 5))  # high
 
-    # Printer UUID (deterministic from printer name)
-    import hashlib
-    uuid_hex = hashlib.md5(printer_name.encode()).hexdigest()
-    printer_uuid = (
-        f"urn:uuid:{uuid_hex[:8]}-{uuid_hex[8:12]}-"
-        f"{uuid_hex[12:16]}-{uuid_hex[16:20]}-{uuid_hex[20:]}"
+    # Printer UUID (deterministic from printer name, RFC 4122 UUID5)
+    printer_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, printer_name))
+    attrs += _encode_text_attribute(
+        IPP_TAG_URI, "printer-uuid", f"urn:uuid:{printer_uuid}"
     )
-    attrs += _encode_text_attribute(IPP_TAG_URI, "printer-uuid", printer_uuid)
 
     # printer-more-info — iOS checks for this URI
     attrs += _encode_text_attribute(
@@ -802,6 +808,10 @@ class IPPRequestHandler(BaseHTTPRequestHandler):
             self._handle_get_printer_attributes(req_id, ver_maj, ver_min)
         elif op_id == IPP_OP_GET_JOBS:
             self._handle_get_jobs(req_id, ver_maj, ver_min)
+        elif op_id == IPP_OP_GET_JOB_ATTRIBUTES:
+            self._handle_get_job_attributes(req_id, ver_maj, ver_min)
+        elif op_id == IPP_OP_CANCEL_JOB:
+            self._handle_cancel_job(req_id, ver_maj, ver_min)
         else:
             logger.warning("Unsupported IPP operation 0x%04X", op_id)
             self._send_ipp_error(req_id, IPP_STATUS_BAD_REQUEST)
@@ -814,10 +824,11 @@ class IPPRequestHandler(BaseHTTPRequestHandler):
             "GET %s  from %s", self.path, self.client_address[0]
         )
         # Return a simple human-readable status page.
+        safe_name = html.escape(self.printer_name)
         body = (
             "<html><body>"
             "<h1>AirPrint Bridge</h1>"
-            f"<p>Printer: <strong>{self.printer_name}</strong></p>"
+            f"<p>Printer: <strong>{safe_name}</strong></p>"
             "<p>IPP endpoint: <code>POST /ipp/print</code></p>"
             "</body></html>"
         ).encode("utf-8")
@@ -849,33 +860,43 @@ class IPPRequestHandler(BaseHTTPRequestHandler):
             mime,
         )
 
-        # Write to a temp file
-        tmp_dir = tempfile.gettempdir()
-        tmp_path = os.path.join(
-            tmp_dir, f"airprint_job_{req_id}{ext}"
-        )
+        # Write to a temp file with unpredictable name (avoid TOCTOU race)
+        tmp_path = None
+        spool_path = None
         try:
-            with open(tmp_path, "wb") as fh:
-                fh.write(doc_data)
+            tmp_fd = tempfile.NamedTemporaryFile(
+                delete=False, suffix=ext, prefix="airprint_"
+            )
+            tmp_path = tmp_fd.name
+            tmp_fd.write(doc_data)
+            tmp_fd.close()
             logger.info("Temp file written: %s", tmp_path)
+
+            # Convert Apple Raster (URF) to PDF — Windows can't print URF natively.
+            spool_path = tmp_path
+            if ext == ".urf":
+                spool_path = convert_urf_to_pdf(tmp_path)
+                logger.info("Spool path after conversion: %s", spool_path)
+
+            # Spool
+            spool_to_printer(spool_path, self.printer_name)
+
         except OSError:
             logger.exception("Failed to write temp file")
             self._send_ipp_error(req_id, IPP_STATUS_INTERNAL_ERROR)
             return
-
-        # Convert Apple Raster (URF) to PDF — Windows can't print URF natively.
-        spool_path = tmp_path
-        if ext == ".urf":
-            spool_path = convert_urf_to_pdf(tmp_path)
-            logger.info("Spool path after conversion: %s", spool_path)
-
-        # Spool
-        try:
-            spool_to_printer(spool_path, self.printer_name)
         except Exception:
             logger.exception("Spooling failed")
             self._send_ipp_error(req_id, IPP_STATUS_INTERNAL_ERROR)
             return
+        finally:
+            # Clean up temp files
+            for path in (tmp_path, spool_path):
+                if path and os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
 
         # Build a successful response with a job-attributes group
         job_attrs = struct.pack("!B", IPP_TAG_JOB)
@@ -927,6 +948,34 @@ class IPPRequestHandler(BaseHTTPRequestHandler):
         )
         self._send_raw_ipp(response)
         logger.info("Get-Jobs #%d → empty list", req_id)
+
+    def _handle_get_job_attributes(
+        self, req_id: int, ver_maj: int, ver_min: int,
+    ) -> None:
+        """Return job-state = completed for any job ID iOS queries."""
+        job_attrs = struct.pack("!B", IPP_TAG_JOB)
+        job_attrs += _encode_integer_attribute("job-id", req_id)
+        job_attrs += _encode_enum_attribute("job-state", 9)  # completed
+        job_attrs += _encode_text_attribute(
+            IPP_TAG_KEYWORD, "job-state-reasons", "job-completed-successfully"
+        )
+        response = build_ipp_response(
+            req_id, IPP_STATUS_OK, extra_groups=job_attrs,
+            version_major=ver_maj, version_minor=ver_min,
+        )
+        self._send_raw_ipp(response)
+        logger.info("Get-Job-Attributes #%d → completed", req_id)
+
+    def _handle_cancel_job(
+        self, req_id: int, ver_maj: int, ver_min: int,
+    ) -> None:
+        """Acknowledge a Cancel-Job request (job already printed)."""
+        response = build_ipp_response(
+            req_id, IPP_STATUS_OK,
+            version_major=ver_maj, version_minor=ver_min,
+        )
+        self._send_raw_ipp(response)
+        logger.info("Cancel-Job #%d → acknowledged", req_id)
 
     # ------------------------------------------------------------------ #
     # Low-level response helpers                                          #
@@ -1023,12 +1072,7 @@ class MDNSAdvertiser:
         #   - RFC 8011 (IPP/2.0)
         # iOS requires image/urf in the PDL list for AirPrint.
         # It also requires a UUID that perfectly matches the IPP response.
-        import hashlib
-        uuid_hex = hashlib.md5(self._printer_name.encode()).hexdigest()
-        printer_uuid_str = (
-            f"{uuid_hex[:8]}-{uuid_hex[8:12]}-"
-            f"{uuid_hex[12:16]}-{uuid_hex[16:20]}-{uuid_hex[20:]}"
-        )
+        printer_uuid_str = str(uuid.uuid5(uuid.NAMESPACE_DNS, self._printer_name))
 
         txt_props = {
             "txtvers": "1",
@@ -1198,6 +1242,21 @@ class AirPrintBridgeService(win32serviceutil.ServiceFramework):
         main(self.shutdown_event)
 
 
+def _run_interactive() -> None:
+    """Run the server interactively (not as a Windows service)."""
+    shutdown_event = threading.Event()
+
+    def _on_signal(signum=None, frame=None):
+        shutdown_event.set()
+
+    signal.signal(signal.SIGINT, _on_signal)
+    signal.signal(signal.SIGTERM, _on_signal)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, _on_signal)
+
+    main(shutdown_event)
+
+
 if __name__ == "__main__":
     import pywintypes
     if len(sys.argv) == 1:
@@ -1209,26 +1268,12 @@ if __name__ == "__main__":
         except pywintypes.error as e:
             if e.winerror == 1063:
                 print("Running interactively (not started by Service Control Manager)...")
-                shutdown_event = threading.Event()
-                def _shutdown(signum=None, frame=None):
-                    shutdown_event.set()
-                signal.signal(signal.SIGINT, _shutdown)
-                signal.signal(signal.SIGTERM, _shutdown)
-                if hasattr(signal, "SIGBREAK"):
-                    signal.signal(signal.SIGBREAK, _shutdown)
-                main(shutdown_event)
+                _run_interactive()
             else:
                 raise
     else:
         # Command-line usage
         if sys.argv[1] == 'debug':
-            shutdown_event = threading.Event()
-            def _shutdown(signum=None, frame=None):
-                shutdown_event.set()
-            signal.signal(signal.SIGINT, _shutdown)
-            signal.signal(signal.SIGTERM, _shutdown)
-            if hasattr(signal, "SIGBREAK"):
-                signal.signal(signal.SIGBREAK, _shutdown)
-            main(shutdown_event)
+            _run_interactive()
         else:
             win32serviceutil.HandleCommandLine(AirPrintBridgeService)

@@ -8,8 +8,21 @@ import sys
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-HOST = "192.168.100.49"
-PORT = 631
+# Accept host from CLI, or auto-detect local IP
+if len(sys.argv) >= 2:
+    HOST = sys.argv[1]
+else:
+    _sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        _sock.connect(("8.8.8.8", 80))
+        HOST = _sock.getsockname()[0]
+    except OSError:
+        HOST = "127.0.0.1"
+    finally:
+        _sock.close()
+
+PORT = int(sys.argv[2]) if len(sys.argv) >= 3 else 631
+print(f"Target: {HOST}:{PORT}")
 
 # Build Get-Printer-Attributes request (mimicking iOS)
 def build_request():

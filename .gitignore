@@ -1,7 +1,15 @@
-*.log
-__pycache__/airprint_bridge.cpython-314.pyc
-SOCIAL_MEDIA.md
-*.spec
+# Byte-compiled / cached
+__pycache__/
+*.pyc
+
+# Build artifacts
 /build
-/Release
 /dist
+/Release
+
+# Logs
+*.log
+
+# Environment
+.env
+

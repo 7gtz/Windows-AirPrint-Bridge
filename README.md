@@ -38,7 +38,7 @@ pip install zeroconf pymupdf pillow pywin32
 
 The easiest way to install and run the AirPrint Bridge is using the provided Windows Installer. This will automatically install the bridge as a background Windows Service that starts when your PC boots.
 
-1. Download the latest `AirPrintBridge_Setup_v1.0.1.exe` from the Releases page.
+1. Download the latest `AirPrintBridge_Setup_v1.1.0.exe` from the Releases page.
 2. Run the installer and follow the prompts.
 3. The AirPrint Bridge service will automatically start in the background.
 

@@ -1,3 +1,17 @@
+## v1.1.0 - 2026-08-12
+
+### 🛠️ Windows Service & Compatibility Fixes
+- **Windows Service SCM Error 7039 Fixed:** Updated PyInstaller build settings to `--console` mode to ensure PID consistency with Windows Service Control Manager.
+- **Persistent Service Logging:** Fixed log file path resolution when frozen with PyInstaller (`sys.executable` directory) so logs persist properly.
+- **IPP Operation Expansion:** Added support for `Get-Job-Attributes` (`0x0009`) and `Cancel-Job` (`0x0008`) required by iOS PrintKit post-print routines.
+
+### 🔒 Security & Code Quality Improvements
+- **Document Extraction Safety:** Removed unsafe brute-force `0x03` delimiter fallback byte search that could truncate binary payloads.
+- **XSS Prevention:** HTML-escaped printer names rendered in Web / HTTP status views.
+- **Temp File Hardening:** Switched print job temp file creation to `tempfile.NamedTemporaryFile` with explicit cleanup in `finally` blocks.
+- **UUID Compliance:** Standardized UUID generation across mDNS and IPP responses using RFC 4122 `uuid.uuid5()`.
+- **Diagnostic Tool Cleanups:** Replaced hardcoded IP addresses with dynamic local IP auto-detection across `diagnose.py`, `decode_ipp.py`, and `quick_check.py`.
+
 ## v1.0.1 - 2026-08-11
 
 ### 🐛 Bug Fixes

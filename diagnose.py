@@ -7,6 +7,16 @@ import struct
 import sys
 import json
 
+# Auto-detect local IP for testing
+_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+try:
+    _sock.connect(("8.8.8.8", 80))
+    LOCAL_IP = _sock.getsockname()[0]
+except OSError:
+    LOCAL_IP = "127.0.0.1"
+finally:
+    _sock.close()
+
 # --- 1. Scan mDNS for _ipp._tcp services ---
 print("=" * 60)
 print("STEP 1: Scanning mDNS for _ipp._tcp.local. services")
@@ -87,7 +97,7 @@ def build_get_attrs_request():
     body += struct.pack("!H", 5) + b"en-us"
     
     # printer-uri
-    printer_uri = b"ipp://192.168.100.49:631/ipp/print"
+    printer_uri = f"ipp://{LOCAL_IP}:631/ipp/print".encode("ascii")
     body += struct.pack("!B", 0x45)  # uri tag
     body += struct.pack("!H", 11) + b"printer-uri"
     body += struct.pack("!H", len(printer_uri)) + printer_uri
@@ -98,7 +108,7 @@ def build_get_attrs_request():
     return header + body
 
 try:
-    conn = http.client.HTTPConnection("192.168.100.49", 631, timeout=5)
+    conn = http.client.HTTPConnection(LOCAL_IP, 631, timeout=5)
     ipp_request = build_get_attrs_request()
     conn.request("POST", "/ipp/print", body=ipp_request, headers={
         "Content-Type": "application/ipp",
@@ -159,7 +169,7 @@ sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 try:
     sock.connect(("8.8.8.8", 80))
     local_ip = sock.getsockname()[0]
-except:
+except OSError:
     local_ip = "UNKNOWN"
 finally:
     sock.close()
