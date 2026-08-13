@@ -20,9 +20,12 @@ A production-ready, standalone Python script that acts as an AirPrint and IPP (I
 
 By strictly adhering to Apple's latest AirPrint requirements, this script achieves broad backward compatibility across almost all platforms that support IPP:
 
-- **iOS & iPadOS:** Supports virtually all versions from **iOS 4.2 up through iOS 18+**. It passes the stringent zero-configuration checks introduced in iOS 16–18 while remaining completely compatible with older devices.
+- **iOS & iPadOS:** Fully tested and verified. Supports virtually all versions from **iOS 4.2 up through iOS 18+**. It passes the stringent zero-configuration checks introduced in iOS 16–18 while remaining completely compatible with older devices.
 - **macOS:** Natively supported via Bonjour discovery.
-- **Android:** Supported natively via the Android Default Print Service (IPP Everywhere).
+- **Android:** Supported via the Android Default Print Service (IPP Everywhere).
+
+> [!NOTE]
+> **Android Disclaimer:** This service was built and tested on iPhones, where it is working as intended. Since I do not own an Android device, hands-on testing on Android has not been performed. If you encounter any bugs or issues when using this service on Android, please [report a bug / open an issue](https://github.com/salmanasmat/Windows-AirPrint-Bridge/issues) on GitHub!
 
 ## Installation (Recommended)
 
