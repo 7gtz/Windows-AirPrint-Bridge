@@ -18,20 +18,35 @@ A production-ready, standalone Python script that acts as an AirPrint and IPP (I
 
 ## Supported Devices
 
-By strictly adhering to Apple's latest AirPrint requirements, this script achieves broad backward compatibility across almost all platforms that support IPP:
+By strictly adhering to Apple AirPrint and standard IPP Everywhere requirements, this service achieves seamless driverless printing across platforms:
 
-- **iOS & iPadOS:** Fully tested and verified. Supports virtually all versions from **iOS 4.2 up through iOS 18+**. It passes the stringent zero-configuration checks introduced in iOS 16–18 while maintaining backward compatibility.
-- **macOS:** Natively supported via Bonjour discovery.
-- **Android:** Supported via the Android Default Print Service (IPP Everywhere).
+- **iOS & iPadOS:** Fully tested and verified. Supports virtually all versions from **iOS 4.2 up through iOS 18+**. Passes strict zero-configuration checks introduced in iOS 16–18.
+- **macOS:** Natively supported via Bonjour / AirPrint discovery.
+- **Android:** Natively supported via the Android Default Print Service and Mopria (IPP Everywhere).
+
+> [!TIP]
+> **v1.2.0 Release Highlights:** v1.2.0 introduces full native Android discovery compatibility (synchronizing mDNS/IPP UUIDs, enforcing RFC 8011 attribute compliance, and adding PWG-Raster format support) alongside existing iOS AirPrint support.
+
+## Android Configuration (Important)
+
+Unlike iOS (where AirPrint is always enabled by default in the sharing sheet), **Android often has its built-in print service disabled by default** depending on the device manufacturer (e.g., Samsung, Xiaomi, OnePlus, Motorola).
+
+To make your Windows printer discoverable on Android:
+
+1. Open **Settings** on your Android device.
+2. Navigate to **Connected devices → Connection preferences → Printing** *(or search for **"Printing"** in the Settings search bar)*.
+3. Tap **Default Print Service** and toggle the switch to **ON**.
+4. Now, open any photo, document, or webpage, tap **Share → Print** (or menu **Print**), and your Windows printer (`<Printer Name> (<PC-Hostname>)`) will appear in the printer selection dropdown.
 
 > [!NOTE]
-> **Android Disclaimer:** This service was built and tested on iPhones, where it is working as intended. Since I do not own an Android device, hands-on testing on Android has not been performed. If you encounter issues, please report them in the Issues section.
+> - **Alternative Print Service:** If your device manufacturer removed the Default Print Service, install the official [Mopria Print Service](https://play.google.com/store/apps/details?id=org.mopria.clara) app from Google Play.
+> - **Wi-Fi Network / AP Isolation:** Ensure your Android phone and Windows PC are connected to the same Wi-Fi network and subnet. Make sure **"AP Isolation" / "Client Isolation"** or **"Guest Network"** is disabled in your Wi-Fi router settings so mDNS (UDP 5353) multicast traffic can pass between devices.
 
 ## Installation (Recommended)
 
-The easiest way to install and run AirPrint Bridge on Windows is using the pre-compiled installer. **No Python installation or dependencies are required.** Everything is bundled into a self-contained executable.
+The easiest way to install and run AirPrint Bridge on Windows is using the pre-compiled installer. **No Python installation or dependencies are required.** Everything is bundled into a self-contained background Windows Service that automatically starts when your PC boots.
 
-1. Download the latest `AirPrintBridge_Setup_v1.1.1.exe` from the [Releases page](https://github.com/salmanasmat/Windows-AirPrint-Bridge/releases/latest).
+1. Download the latest `AirPrintBridge_Setup_v1.2.0.exe` from the [Releases page](https://github.com/salmanasmat/Windows-AirPrint-Bridge/releases/latest).
 2. Run the installer as Administrator and follow the setup wizard.
 3. The AirPrint Bridge service will automatically start in the background.
 4. On your iOS or Android device (connected to the same Wi-Fi network), open a document or photo, tap **Print**, and select your Windows printer.
