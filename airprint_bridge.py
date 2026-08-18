@@ -602,8 +602,8 @@ def _build_printer_attributes(
 
     # --- Identity ---
     attrs += _encode_text_attribute(IPP_TAG_URI, "printer-uri-supported", printer_uri)
-    attrs += _encode_text_attribute(IPP_TAG_URISCHEME, "uri-security-supported", "none")
-    attrs += _encode_text_attribute(IPP_TAG_URISCHEME, "uri-authentication-supported", "none")
+    attrs += _encode_text_attribute(IPP_TAG_KEYWORD, "uri-security-supported", "none")
+    attrs += _encode_text_attribute(IPP_TAG_KEYWORD, "uri-authentication-supported", "none")
     attrs += _encode_text_attribute(IPP_TAG_NAME, "printer-name", printer_name)
     attrs += _encode_text_attribute(IPP_TAG_TEXT, "printer-info", display_name)
     attrs += _encode_text_attribute(IPP_TAG_TEXT, "printer-location", f"PC: {hostname}")
@@ -622,11 +622,12 @@ def _build_printer_attributes(
     attrs += _encode_text_attribute(IPP_TAG_KEYWORD, "printer-state-reasons", "none")
 
     # --- Capabilities ---
-    # iOS AirPrint requires image/urf in the supported formats list.
+    # iOS AirPrint and Android IPP Everywhere / Mopria supported formats list.
     attrs += _encode_text_attribute(IPP_TAG_MIMETYPE, "document-format-supported", "application/pdf")
     attrs += _encode_additional_value(IPP_TAG_MIMETYPE, b"image/urf")
     attrs += _encode_additional_value(IPP_TAG_MIMETYPE, b"image/jpeg")
     attrs += _encode_additional_value(IPP_TAG_MIMETYPE, b"image/png")
+    attrs += _encode_additional_value(IPP_TAG_MIMETYPE, b"image/pwg-raster")
     attrs += _encode_additional_value(IPP_TAG_MIMETYPE, b"application/octet-stream")
 
     attrs += _encode_text_attribute(IPP_TAG_MIMETYPE, "document-format-default", "application/pdf")
@@ -702,8 +703,9 @@ def _build_printer_attributes(
     attrs += _encode_additional_value(IPP_TAG_ENUM, struct.pack("!i", 4))  # normal
     attrs += _encode_additional_value(IPP_TAG_ENUM, struct.pack("!i", 5))  # high
 
-    # Printer UUID (deterministic from printer name, RFC 4122 UUID5)
-    printer_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, printer_name))
+    # Printer UUID (deterministic from printer name + hostname, RFC 4122 UUID5)
+    # MUST strictly match the UUID in the mDNS TXT record so Android BIPS does not reject it.
+    printer_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{printer_name}@{hostname}"))
     attrs += _encode_text_attribute(
         IPP_TAG_URI, "printer-uuid", f"urn:uuid:{printer_uuid}"
     )
@@ -1089,7 +1091,7 @@ class MDNSAdvertiser:
             "ty": display_name,
             "product": f"({self._printer_name})",
             "note": f"AirPrint Bridge on {hostname}",
-            "pdl": "application/pdf,image/urf,image/jpeg,image/png",
+            "pdl": "application/pdf,image/urf,image/jpeg,image/png,image/pwg-raster",
             "Color": "T",                         # Must match SRGB24 in URF
             "Duplex": "F",
             "adminurl": f"http://{self._host_ip}:{self._port}/",

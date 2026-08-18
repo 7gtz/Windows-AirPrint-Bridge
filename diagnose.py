@@ -137,7 +137,8 @@ try:
             b"urf-supported": "urf-supported",
             b"printer-uuid": "printer-uuid",
             b"printer-more-info": "printer-more-info",
-            b"image/urf": "image/urf in PDL list",
+            b"image/urf": "image/urf in PDL list (AirPrint)",
+            b"image/pwg-raster": "image/pwg-raster in PDL list (Android/Mopria)",
         }
         print()
         print("  AirPrint attribute check:")
