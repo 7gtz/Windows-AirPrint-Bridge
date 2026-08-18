@@ -6,30 +6,30 @@
 [![GitHub release](https://img.shields.io/github/v/release/salmanasmat/Windows-AirPrint-Bridge?color=brightgreen)](https://github.com/salmanasmat/Windows-AirPrint-Bridge/releases/latest)
 [![GitHub All Releases](https://img.shields.io/github/downloads/salmanasmat/Windows-AirPrint-Bridge/total)](https://github.com/salmanasmat/Windows-AirPrint-Bridge/releases)
 
-A production-ready, standalone Python script that acts as an AirPrint and IPP (Internet Printing Protocol) bridge server. It enables iOS (AirPrint) and Android (IPP Everywhere) devices connected to the same Wi-Fi network to print directly to a PC-connected printer natively—without requiring any third-party mobile apps.
+A production-ready, standalone Python script that acts as an AirPrint and IPP (Internet Printing Protocol) bridge server. It enables iOS (AirPrint) and Android (IPP Everywhere) devices connected to the same network to print documents to Windows printers—including legacy, offline printers that don't support Ethernet or Wi-Fi connections. Transform any offline printer into a network-accessible device, enabling seamless printing from phones and tablets over your local network.
 
 ## Features
 
-- **Native Zero-Configuration Discovery:** Broadcasts strictly compliant mDNS `_ipp._tcp.local.` and Apple AirPrint `_universal._sub._ipp._tcp.local.` services. Automatically binds to your active Wi-Fi adapter to prevent multicast routing issues on multi-homed (Ethernet + Wi-Fi) machines.
-- **Strict iOS 18 Compatibility:** Implements Apple's required TXT record properties (like deterministic `UUID` matching and URF capability strings) to pass the strict iOS 18 discovery validation phase.
+- **Native Zero-Configuration Discovery:** Broadcasts strictly compliant mDNS `_ipp._tcp.local.` and Apple AirPrint `_universal._sub._ipp._tcp.local.` services. Automatically binds to your active network interface.
+- **Strict iOS 18 Compatibility:** Implements Apple's required TXT record properties (like deterministic `UUID` matching and URF capability strings) to pass the strict iOS 18 discovery validation checks.
 - **HTTP/1.1 & Chunked Transfer Encoding:** A custom HTTP server that natively handles the `Expect: 100-continue` and chunked HTTP payloads sent by iOS for large print jobs.
-- **Robust Headless PDF Rendering:** Avoids unreliable Windows shell commands (like `ShellExecute printto`) which break when Microsoft Edge is the default PDF viewer. Instead, it uses `PyMuPDF` to rasterize the PDF in-memory and `win32ui` to send it directly to the printer's Device Context (DC).
-- **Scale-to-Fit:** Automatically detects your printer's exact printable area (DPI and physical dimensions) and mathematically scales the document to fit perfectly and center on the page, preventing cropping.
+- **Robust Headless PDF Rendering:** Avoids unreliable Windows shell commands (like `ShellExecute printto`) which break when Microsoft Edge is the default PDF viewer. Instead, it uses `PyMuPDF` to render documents natively.
+- **Scale-to-Fit:** Automatically detects your printer's exact printable area (DPI and physical dimensions) and mathematically scales the document to fit perfectly and center on the page, preventing clipping or distortion.
 
 ## Supported Devices
 
 By strictly adhering to Apple's latest AirPrint requirements, this script achieves broad backward compatibility across almost all platforms that support IPP:
 
-- **iOS & iPadOS:** Fully tested and verified. Supports virtually all versions from **iOS 4.2 up through iOS 18+**. It passes the stringent zero-configuration checks introduced in iOS 16–18 while remaining completely compatible with older devices.
+- **iOS & iPadOS:** Fully tested and verified. Supports virtually all versions from **iOS 4.2 up through iOS 18+**. It passes the stringent zero-configuration checks introduced in iOS 16–18 while maintaining backward compatibility.
 - **macOS:** Natively supported via Bonjour discovery.
 - **Android:** Supported via the Android Default Print Service (IPP Everywhere).
 
 > [!NOTE]
-> **Android Disclaimer:** This service was built and tested on iPhones, where it is working as intended. Since I do not own an Android device, hands-on testing on Android has not been performed. If you encounter any bugs or issues when using this service on Android, please [report a bug / open an issue](https://github.com/salmanasmat/Windows-AirPrint-Bridge/issues) on GitHub!
+> **Android Disclaimer:** This service was built and tested on iPhones, where it is working as intended. Since I do not own an Android device, hands-on testing on Android has not been performed. If you encounter issues, please report them in the Issues section.
 
 ## Installation (Recommended)
 
-The easiest way to install and run AirPrint Bridge on Windows is using the pre-compiled installer. **No Python installation or dependencies are required.** Everything is bundled into a self-contained background Windows Service that automatically starts when your PC boots.
+The easiest way to install and run AirPrint Bridge on Windows is using the pre-compiled installer. **No Python installation or dependencies are required.** Everything is bundled into a self-contained executable.
 
 1. Download the latest `AirPrintBridge_Setup_v1.1.1.exe` from the [Releases page](https://github.com/salmanasmat/Windows-AirPrint-Bridge/releases/latest).
 2. Run the installer as Administrator and follow the setup wizard.
@@ -85,12 +85,12 @@ python diagnose.py
 ### Common Issues
 
 - **Firewall Blocking:** Ensure that **TCP Port 631** (IPP) and **UDP Port 5353** (mDNS/Bonjour) are allowed through the Windows Defender Firewall for inbound connections.
-- **Ghost Processes:** If the script crashes or is terminated forcefully, a zombie Python process might hold port `631` open, preventing the script from restarting. You can forcefully kill any process holding port 631 via PowerShell:
+- **Ghost Processes:** If the script crashes or is terminated forcefully, a zombie Python process might hold port `631` open, preventing the script from restarting. You can forcefully kill any process using the port with:
   ```powershell
   $pidToKill = (netstat -ano | Select-String ":631" | Select-String "LISTENING").Line.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)[-1]; if ($pidToKill) { Stop-Process -Id $pidToKill -Force }
   ```
 - **Different Subnets:** Your mobile device and Windows PC must be on the exact same local Wi-Fi subnet for mDNS multicast packets to reach the device.
-- **Virtual Printers (e.g. RustDesk, PDF Printers):** If the service is running but printing does nothing (or you see a virtual printer name), a program likely changed your Windows Default Printer. The bridge strictly uses your default printer. To fix this:
+- **Virtual Printers (e.g. RustDesk, PDF Printers):** If the service is running but printing does nothing (or you see a virtual printer name), a program likely changed your Windows Default Printer. To fix:
   1. Open the Windows Settings app.
   2. Go to **Bluetooth & devices > Printers & scanners**.
   3. Under "Printer preferences", make sure **"Let Windows manage my default printer"** is turned **OFF**.
@@ -99,6 +99,6 @@ python diagnose.py
 
 ## How It Works (Technical Architecture)
 
-1. **mDNS Registration:** Uses a dual-instance `zeroconf` approach to simultaneously register the primary IPP service and the Apple-specific `_universal` subtype pointing to the same instance name without raising registry collision exceptions.
-2. **IPP Binary Protocol:** The server implements a minimal IPP 1.1 / 2.0 binary protocol parser, handling `Print-Job`, `Validate-Job`, and `Get-Printer-Attributes` operations. It responds with mandatory AirPrint capabilities (e.g., `airprint-1.8`, `media-ready`, `urf-supported`).
-3. **Print Spooling:** When a document is received, it is dumped to a temporary file. `win32ui` and `win32print` are used in combination with `fitz` (PyMuPDF) to draw the document natively into the Windows print spooler.
+1. **mDNS Registration:** Uses a dual-instance `zeroconf` approach to simultaneously register the primary IPP service and the Apple-specific `_universal` subtype pointing to the same instance name in the local domain.
+2. **IPP Binary Protocol:** The server implements a minimal IPP 1.1 / 2.0 binary protocol parser, handling `Print-Job`, `Validate-Job`, and `Get-Printer-Attributes` operations. It responds with mandatory and extended attributes required by modern iOS releases.
+3. **Print Spooling:** When a document is received, it is dumped to a temporary file. `win32ui` and `win32print` are used in combination with `fitz` (PyMuPDF) to draw the document natively into the printer's device context, bypassing the problematic shell-based PDF printing methods.
