@@ -10,6 +10,7 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={#MyAppDir}
+DisableDirPage=no
 OutputDir=.\Release
 OutputBaseFilename=AirPrintBridge_Setup_v{#MyAppVersion}
 Compression=lzma
