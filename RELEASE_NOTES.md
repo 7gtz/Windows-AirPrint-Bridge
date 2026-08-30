@@ -1,3 +1,17 @@
+## v1.2.0 - 2026-08-31
+
+### 🖨️ Configurable Printer Selection
+- **No More "Set as Default" Requirement:** The bridge no longer depends on the Windows default printer. It reads the target printer's exact name from `config.json` (or a `--printer` CLI override) and prints through that queue directly, even if a different printer (e.g. `Microsoft Print to PDF`) is set as the Windows default.
+- **`--list-printers`:** New CLI flag enumerates every Windows printer by its exact name, so `config.json` can be filled in correctly.
+- **`--printer` Override:** New CLI flag for testing a specific printer without editing `config.json`. Priority is `--printer` → `config.json` → a clean startup failure — there is no silent fallback to the default printer.
+- **Startup & Per-Job Validation:** `OpenPrinter`/`GetPrinter` checks confirm the configured printer exists and report its status (`ready`, `offline`, `paper-out`, etc.) before mDNS starts advertising it; each print job logs the target printer and document type.
+- **Driver Configuration Inherited, Not Overridden:** `spool_to_printer()` now reads the printer's existing DEVMODE straight from the Windows print queue and builds the device context from it (`win32gui.CreateDC` + `CreateDCFromHandle`) instead of synthesizing a fresh one — tray, paper type, ReadyPrint, and other driver settings configured in Windows Printer Properties are inherited unmodified.
+
+### 🌐 Android Discovery Compatibility
+- **Native Android Discovery:** Synchronized mDNS/IPP UUIDs so the same printer UUID appears in both the TXT record and `printer-uuid`, satisfying Android's Default Print Service / Mopria (IPP Everywhere).
+- **RFC 8011 Attribute Fixes:** Corrected IPP attribute value-tag types (e.g. URI-tagged attributes) that were previously rejected by strict IPP Everywhere clients.
+- **PWG-Raster Support:** Added `image/pwg-raster` to the supported document formats for broader Android/Mopria compatibility.
+
 ## v1.1.1 - 2026-08-12
 
 ### 🌐 Multi-PC Network & Display Enhancements
