@@ -14,6 +14,7 @@ python -m PyInstaller --onefile `
     --hidden-import win32timezone `
     --hidden-import win32ui `
     --hidden-import win32con `
+    --hidden-import win32gui `
     --hidden-import pythoncom `
     --hidden-import pywintypes `
     --hidden-import fitz `

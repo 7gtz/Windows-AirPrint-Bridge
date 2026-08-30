@@ -42,14 +42,57 @@ To make your Windows printer discoverable on Android:
 > - **Alternative Print Service:** If your device manufacturer removed the Default Print Service, install the official [Mopria Print Service](https://play.google.com/store/apps/details?id=org.mopria.clara) app from Google Play.
 > - **Wi-Fi Network / AP Isolation:** Ensure your Android phone and Windows PC are connected to the same Wi-Fi network and subnet. Make sure **"AP Isolation" / "Client Isolation"** or **"Guest Network"** is disabled in your Wi-Fi router settings so mDNS (UDP 5353) multicast traffic can pass between devices.
 
+## Configuring the Printer
+
+AirPrint Bridge no longer relies on the Windows **default printer** — you tell it explicitly which printer to share, and it prints through that printer's own existing Windows configuration (input tray, paper type, ReadyPrint, etc.), unmodified. This means the Windows default printer can stay set to something else (e.g. `Microsoft Print to PDF`) and the bridge will still print to the printer you configured.
+
+1. Find the exact Windows printer name:
+
+   ```powershell
+   AirPrintBridge.exe --list-printers
+   ```
+
+   ```
+   Available Windows printers:
+
+     1. Brother HL-L2350DW
+     2. Microsoft Print to PDF
+     3. OneNote
+   ```
+
+2. Create `config.json` next to `AirPrintBridge.exe` (a starter `config.json.example` is installed alongside it — copy/rename it) with the exact name from step 1:
+
+   ```json
+   {
+       "printer": "Brother HL-L2350DW"
+   }
+   ```
+
+3. Start (or restart) the service. At startup the bridge validates the configured printer and logs the result:
+
+   ```
+   Configured printer: Brother HL-L2350DW
+   Printer exists: yes
+   Printer status: ready
+   ```
+
+   If the name doesn't match a printer Windows knows about, the bridge logs the error and exits rather than silently falling back to the default printer — this avoids accidentally routing a print job to the wrong device.
+
+> [!TIP]
+> For quick testing without editing `config.json`, pass `--printer` directly — it takes priority over `config.json`:
+> ```powershell
+> AirPrintBridge.exe --printer "Brother HL-L2350DW"
+> ```
+
 ## Installation (Recommended)
 
 The easiest way to install and run AirPrint Bridge on Windows is using the pre-compiled installer. **No Python installation or dependencies are required.** Everything is bundled into a self-contained background Windows Service that automatically starts when your PC boots.
 
 1. Download the latest `AirPrintBridge_Setup_v1.2.0.exe` from the [Releases page](https://github.com/salmanasmat/Windows-AirPrint-Bridge/releases/latest).
 2. Run the installer as Administrator and follow the setup wizard.
-3. The AirPrint Bridge service will automatically start in the background.
-4. On your iOS or Android device (connected to the same Wi-Fi network), open a document or photo, tap **Print**, and select your Windows printer.
+3. Set up `config.json` as described in [Configuring the Printer](#configuring-the-printer) above.
+4. The AirPrint Bridge service will automatically start in the background.
+5. On your iOS or Android device (connected to the same Wi-Fi network), open a document or photo, tap **Print**, and select your Windows printer.
 
 ## Development & Manual Setup (Developers)
 
@@ -68,14 +111,14 @@ pip install zeroconf pymupdf pillow pywin32
 
 ### Running from Source
 
-1. Set the printer you want to share as your **Default Printer** in Windows.
+1. Copy `config.json.example` to `config.json` and set `"printer"` to the exact Windows printer name (run `python airprint_bridge.py --list-printers` to see the available names).
 2. Run the bridge script:
 
 ```powershell
 python airprint_bridge.py
 ```
 
-3. The server will detect your local IP address and default printer, bind to port `631` (the standard IPP port), and begin broadcasting on your local network.
+3. The server will detect your local IP address, validate the configured printer, bind to port `631` (the standard IPP port), and begin broadcasting on your local network.
 
 ### Building the Executable & Installer
 
@@ -105,15 +148,10 @@ python diagnose.py
   $pidToKill = (netstat -ano | Select-String ":631" | Select-String "LISTENING").Line.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)[-1]; if ($pidToKill) { Stop-Process -Id $pidToKill -Force }
   ```
 - **Different Subnets:** Your mobile device and Windows PC must be on the exact same local Wi-Fi subnet for mDNS multicast packets to reach the device.
-- **Virtual Printers (e.g. RustDesk, PDF Printers):** If the service is running but printing does nothing (or you see a virtual printer name), a program likely changed your Windows Default Printer. To fix:
-  1. Open the Windows Settings app.
-  2. Go to **Bluetooth & devices > Printers & scanners**.
-  3. Under "Printer preferences", make sure **"Let Windows manage my default printer"** is turned **OFF**.
-  4. Click on your actual, physical printer in the list.
-  5. Click the **"Set as default"** button at the top.
+- **Wrong printer / nothing prints:** AirPrint Bridge always prints through the printer named in `config.json` (or `--printer`), regardless of the Windows default printer — so a program silently changing your Windows default (RustDesk, a newly installed PDF printer, etc.) can't redirect jobs anymore. Check `airprint_bridge.log` for the `Configured printer: …` / `Printer exists: …` lines at startup to confirm which printer is actually in use, and update `config.json` if it's wrong.
 
 ## How It Works (Technical Architecture)
 
 1. **mDNS Registration:** Uses a dual-instance `zeroconf` approach to simultaneously register the primary IPP service and the Apple-specific `_universal` subtype pointing to the same instance name in the local domain.
 2. **IPP Binary Protocol:** The server implements a minimal IPP 1.1 / 2.0 binary protocol parser, handling `Print-Job`, `Validate-Job`, and `Get-Printer-Attributes` operations. It responds with mandatory and extended attributes required by modern iOS releases.
-3. **Print Spooling:** When a document is received, it is dumped to a temporary file. `win32ui` and `win32print` are used in combination with `fitz` (PyMuPDF) to draw the document natively into the printer's device context, bypassing the problematic shell-based PDF printing methods.
+3. **Print Spooling:** When a document is received, it is dumped to a temporary file. The configured printer's own current DEVMODE (tray, paper type, ReadyPrint, etc. — whatever is set in Windows' Printer Properties) is read from the print queue via `win32print.GetPrinter()` and used unmodified to create the device context via `win32gui.CreateDC()` / `win32ui`; `fitz` (PyMuPDF) then draws the document natively into that DC, bypassing the problematic shell-based PDF printing methods. Because the DEVMODE is inherited rather than reconstructed, any printer settings you change in Windows apply automatically — no bridge configuration needed.

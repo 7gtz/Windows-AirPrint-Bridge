@@ -6,7 +6,7 @@
 |---|---|
 | **Python 3.10+** | Ensure `python` and `pythonw.exe` are on `PATH` |
 | **Windows 10 / 11** | Required for `pywin32` and the print spooler |
-| **USB printer** | Must be set as the **default** Windows printer |
+| **USB printer** | Any printer Windows can see — does **not** need to be the default |
 | **Same Wi‑Fi / LAN** | Mobile devices and the PC must share a subnet |
 
 ---
@@ -26,13 +26,23 @@ python -m pywin32_postinstall -install
 
 ---
 
-## 2 — Verify the Default Printer
+## 2 — Configure the Printer
+
+AirPrint Bridge prints through an explicitly configured printer, not the Windows default. List the exact names Windows knows about:
 
 ```powershell
-python -c "import win32print; print(win32print.GetDefaultPrinter())"
+python airprint_bridge.py --list-printers
 ```
 
-Make sure this returns the printer you want mobile devices to use.
+Then copy `config.json.example` to `config.json` and set `"printer"` to the exact name from that list:
+
+```json
+{
+    "printer": "Brother HL-L2350DW"
+}
+```
+
+(For quick one-off tests you can instead pass `--printer "<name>"` on the command line — it overrides `config.json`.)
 
 ---
 
@@ -167,6 +177,6 @@ All output goes to `airprint_bridge.log` — no `print()` calls are used anywher
 |---|---|
 | Printer not discovered | Confirm firewall rules (step 4). Verify device is on same subnet. |
 | `WinError 10048: address in use` | Another process holds port 631. Check with `netstat -ano \| findstr :631`. |
-| Job sent but nothing prints | Check `airprint_bridge.log` for spooling errors. Verify the default printer with step 2. |
+| Job sent but nothing prints | Check `airprint_bridge.log` for spooling errors, and confirm the `Configured printer: … / Printer exists: yes` lines at startup show the printer you expect (see step 2). |
 | `ShellExecute` opens an app window | Some PDF viewers don't support silent `printto`. Install **SumatraPDF** (portable) — it handles `printto` headlessly. |
 | Script crashes on startup | Run once with `python` (not `pythonw`) to see errors, or inspect the log file. |

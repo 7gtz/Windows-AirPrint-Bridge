@@ -176,10 +176,18 @@ finally:
     sock.close()
 
 import win32print
-printer = win32print.GetDefaultPrinter()
+default_printer = win32print.GetDefaultPrinter()
 
-print(f"  Local IP:        {local_ip}")
-print(f"  Default Printer: {printer}")
+configured_printer = None
+try:
+    with open("config.json", "r", encoding="utf-8") as f:
+        configured_printer = json.load(f).get("printer")
+except (OSError, ValueError):
+    pass
+
+print(f"  Local IP:            {local_ip}")
+print(f"  Windows Default:     {default_printer}")
+print(f"  AirPrint Bridge uses: {configured_printer or '(not set — see config.json.example)'}")
 print(f"  IPP Port:        631")
 print(f"  Expected URI:    ipp://{local_ip}:631/ipp/print")
 

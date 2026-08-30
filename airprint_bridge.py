@@ -24,6 +24,7 @@ from __future__ import annotations
 import atexit
 import hashlib
 import html
+import json
 import logging
 import os
 import signal
@@ -36,7 +37,7 @@ import time
 import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Third-party imports
@@ -126,6 +127,7 @@ else:
     _app_dir = Path(__file__).resolve().parent
 
 LOG_FILE: str = str(_app_dir / "airprint_bridge.log")
+CONFIG_FILE: Path = _app_dir / "config.json"
 
 logger = logging.getLogger("airprint_bridge")
 logger.setLevel(logging.DEBUG)
@@ -317,11 +319,118 @@ def convert_urf_to_pdf(urf_path: str) -> str:
     return urf_path
 
 
-def get_default_printer() -> str:
-    """Return the name of the Windows default printer."""
-    name: str = win32print.GetDefaultPrinter()
-    logger.info("Default Windows printer: %s", name)
-    return name
+# Bitmask flags returned in win32print.GetPrinter(...)['Status'].
+# Used only for friendly logging — printing still proceeds unless the
+# printer can't be opened at all.
+_PRINTER_STATUS_FLAGS: dict[int, str] = {
+    0x00000001: "paused",
+    0x00000002: "error",
+    0x00000004: "pending-deletion",
+    0x00000008: "paper-jam",
+    0x00000010: "paper-out",
+    0x00000020: "manual-feed",
+    0x00000040: "paper-problem",
+    0x00000080: "offline",
+    0x00000100: "io-active",
+    0x00000200: "busy",
+    0x00000400: "printing",
+    0x00000800: "output-bin-full",
+    0x00001000: "not-available",
+    0x00002000: "waiting",
+    0x00004000: "processing",
+    0x00008000: "initializing",
+    0x00010000: "warming-up",
+    0x00020000: "toner-low",
+    0x00040000: "no-toner",
+    0x00080000: "page-punt",
+    0x00100000: "user-intervention",
+    0x00200000: "out-of-memory",
+    0x00400000: "door-open",
+    0x00800000: "server-unknown",
+    0x01000000: "power-save",
+}
+
+
+def _describe_printer_status(status: int) -> str:
+    """Turn a win32print status bitmask into a short, human-readable string."""
+    if status == 0:
+        return "ready"
+    reasons = [name for flag, name in _PRINTER_STATUS_FLAGS.items() if status & flag]
+    return ", ".join(reasons) if reasons else f"unknown (0x{status:08X})"
+
+
+def list_printers() -> List[str]:
+    """Return the names of all printers Windows currently knows about."""
+    flags = win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS
+    # Each entry is (Flags, pDescription, pName, pComment) — index 2 is the name.
+    return [entry[2] for entry in win32print.EnumPrinters(flags)]
+
+
+def load_config() -> dict:
+    """Read ``config.json`` next to the script/executable, if present."""
+    if not CONFIG_FILE.exists():
+        return {}
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.error("Failed to read %s: %s", CONFIG_FILE, exc)
+        return {}
+
+
+def get_configured_printer(cli_override: Optional[str] = None) -> str:
+    """
+    Resolve the Windows printer name AirPrint Bridge should use.
+
+    Priority: ``--printer`` argument  →  ``config.json``  →  fail.
+
+    We deliberately do NOT fall back to the Windows default printer —
+    silently printing to whatever happens to be default could send a
+    sensitive document to the wrong device.
+    """
+    if cli_override:
+        logger.info("Printer selected via --printer argument: %s", cli_override)
+        return cli_override
+
+    config = load_config()
+    name = config.get("printer")
+    if name:
+        logger.info("Printer selected via %s: %s", CONFIG_FILE.name, name)
+        return name
+
+    logger.critical(
+        "No printer configured. Create %s with {\"printer\": \"<exact Windows "
+        "printer name>\"} or pass --printer \"<name>\". "
+        "Run with --list-printers to see the exact names Windows knows about.",
+        CONFIG_FILE,
+    )
+    return ""
+
+
+def validate_printer(printer_name: str) -> bool:
+    """
+    Verify that Windows knows about *printer_name* and log its status.
+
+    Returns ``True`` if the printer exists and could be opened, ``False``
+    otherwise. This runs before mDNS is started so the bridge never
+    advertises a printer it cannot actually print to.
+    """
+    try:
+        hprinter = win32print.OpenPrinter(printer_name)
+    except Exception as exc:
+        logger.critical("Configured printer: %s", printer_name)
+        logger.critical("Printer exists: no (%s)", exc)
+        return False
+
+    try:
+        info = win32print.GetPrinter(hprinter, 2)
+        status = _describe_printer_status(info.get("Status", 0))
+        logger.info("Configured printer: %s", printer_name)
+        logger.info("Printer exists: yes")
+        logger.info("Printer status: %s", status)
+        return True
+    finally:
+        win32print.ClosePrinter(hprinter)
 
 
 def spool_to_printer(file_path: str, printer_name: str) -> None:
@@ -338,6 +447,7 @@ def spool_to_printer(file_path: str, printer_name: str) -> None:
         import win32print
         import win32ui
         import win32con
+        import win32gui
         import pythoncom
         import fitz
         from PIL import Image, ImageWin
@@ -349,8 +459,23 @@ def spool_to_printer(file_path: str, printer_name: str) -> None:
     try:
         hprinter = win32print.OpenPrinter(printer_name)
         try:
-            hdc = win32ui.CreateDC()
-            hdc.CreatePrinterDC(printer_name)
+            # Pull the printer's *existing* DEVMODE straight from the Windows
+            # print queue (tray, paper type, ReadyPrint, etc. — whatever is
+            # already configured in Printer Properties) and build the DC
+            # from it. We do NOT touch any field on this DEVMODE — the
+            # Windows driver's own configuration is the source of truth,
+            # not something this bridge decides.
+            printer_info = win32print.GetPrinter(hprinter, 2)
+            devmode = printer_info.get("pDevMode")
+            if devmode is None:
+                logger.warning(
+                    "Printer '%s' returned no DEVMODE — falling back to "
+                    "driver defaults",
+                    printer_name,
+                )
+
+            hdc_handle = win32gui.CreateDC("WINSPOOL", printer_name, None, devmode)
+            hdc = win32ui.CreateDCFromHandle(hdc_handle)
 
             printer_dpi_x = hdc.GetDeviceCaps(win32con.LOGPIXELSX)
             printer_dpi_y = hdc.GetDeviceCaps(win32con.LOGPIXELSY)
@@ -850,6 +975,9 @@ class IPPRequestHandler(BaseHTTPRequestHandler):
         self, raw: bytes, req_id: int, ver_maj: int, ver_min: int,
     ) -> None:
         """Extract the document payload and spool it."""
+        logger.info("Print-Job #%d received", req_id)
+        logger.info("Target printer: %s", self.printer_name)
+
         doc_data = extract_document_data(raw)
         if not doc_data:
             logger.error("No document data found in Print-Job payload")
@@ -863,6 +991,8 @@ class IPPRequestHandler(BaseHTTPRequestHandler):
             ext,
             mime,
         )
+        logger.info("Document: %s", mime)
+        logger.info("Using Windows printer configuration — spooling...")
 
         # Write to a temp file with unpredictable name (avoid TOCTOU race)
         tmp_path = None
@@ -1180,24 +1310,40 @@ class MDNSAdvertiser:
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def main(shutdown_event: threading.Event) -> None:
+def main(shutdown_event: threading.Event, printer_override: Optional[str] = None) -> None:
     """Start the AirPrint bridge server."""
     logger.info("=" * 60)
-    logger.info("AirPrint Bridge starting up")
+    logger.info("AirPrint Bridge starting")
     logger.info("=" * 60)
 
     # ---- Detect environment ----
     host_ip = get_local_ip()
-    printer_name = get_default_printer()
+
+    # ---- Resolve which Windows printer to use: --printer > config.json ----
+    printer_name = get_configured_printer(printer_override)
     if not printer_name:
-        logger.critical("No default printer configured — aborting.")
+        logger.critical("No printer configured — aborting.")
         sys.exit(1)
+
+    # ---- Validate it before advertising anything on the network ----
+    if not validate_printer(printer_name):
+        logger.critical(
+            "Configured printer '%s' is not known to Windows — aborting. "
+            "Run with --list-printers to see valid names.",
+            printer_name,
+        )
+        sys.exit(1)
+
+    logger.info("Using existing Windows printer configuration (tray/paper/etc. "
+                "are inherited from the driver, not overridden by this bridge)")
 
     # ---- Configure the request handler class ----
     IPPRequestHandler.printer_name = printer_name
     IPPRequestHandler.host_ip = host_ip
 
     # ---- Start mDNS advertiser ----
+    hostname = socket.gethostname()
+    logger.info("mDNS name: %s (%s)", printer_name, hostname)
     mdns = MDNSAdvertiser(printer_name, host_ip, IPP_PORT)
     mdns.register()
 
@@ -1233,6 +1379,10 @@ class AirPrintBridgeService(win32serviceutil.ServiceFramework):
     _svc_display_name_ = "AirPrint Bridge Service"
     _svc_description_ = "Advertises local printers to Apple devices via mDNS and IPP."
 
+    # Set on the class (before StartServiceCtrlDispatcher) when the process
+    # was launched with --printer, so SvcDoRun can pick it up.
+    printer_override: Optional[str] = None
+
     def __init__(self, args):
         win32serviceutil.ServiceFramework.__init__(self, args)
         self.hWaitStop = win32event.CreateEvent(None, 0, 0, None)
@@ -1249,10 +1399,10 @@ class AirPrintBridgeService(win32serviceutil.ServiceFramework):
             servicemanager.PYS_SERVICE_STARTED,
             (self._svc_name_, '')
         )
-        main(self.shutdown_event)
+        main(self.shutdown_event, AirPrintBridgeService.printer_override)
 
 
-def _run_interactive() -> None:
+def _run_interactive(printer_override: Optional[str] = None) -> None:
     """Run the server interactively (not as a Windows service)."""
     shutdown_event = threading.Event()
 
@@ -1264,26 +1414,89 @@ def _run_interactive() -> None:
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, _on_signal)
 
-    main(shutdown_event)
+    main(shutdown_event, printer_override)
+
+
+def _cmd_list_printers() -> None:
+    """Implements ``--list-printers``: print all Windows printers Windows knows about."""
+    printers = list_printers()
+    print("Available Windows printers:\n")
+    if not printers:
+        print("  (none found)")
+        return
+    for i, name in enumerate(printers, 1):
+        print(f"  {i}. {name}")
+    print(
+        f"\nSelect one by putting it in {CONFIG_FILE.name} as "
+        f'{{"printer": "<exact name>"}}, or pass --printer "<exact name>".'
+    )
+
+
+def _extract_cli_overrides(argv: List[str]) -> Tuple[Optional[str], bool, List[str]]:
+    """
+    Pull ``--printer <name>`` / ``--printer=<name>`` and ``--list-printers``
+    out of *argv*, leaving the rest untouched for
+    ``win32serviceutil.HandleCommandLine`` (install/start/stop/remove/debug).
+
+    Returns ``(printer_override, list_printers_flag, remaining_argv)``.
+    """
+    printer_override: Optional[str] = None
+    list_flag = False
+    remaining: List[str] = []
+
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--printer":
+            if i + 1 >= len(argv):
+                print("Error: --printer requires a value", file=sys.stderr)
+                sys.exit(2)
+            printer_override = argv[i + 1]
+            i += 2
+            continue
+        if arg.startswith("--printer="):
+            printer_override = arg.split("=", 1)[1]
+            i += 1
+            continue
+        if arg == "--list-printers":
+            list_flag = True
+            i += 1
+            continue
+        remaining.append(arg)
+        i += 1
+
+    return printer_override, list_flag, remaining
 
 
 if __name__ == "__main__":
     import pywintypes
+
+    _printer_override, _list_flag, _remaining_argv = _extract_cli_overrides(sys.argv[1:])
+
+    if _list_flag:
+        _cmd_list_printers()
+        sys.exit(0)
+
+    # Rewrite argv so the rest of the dispatch logic below (and pywin32's
+    # own command-line parsing) never sees --printer/--list-printers.
+    sys.argv = [sys.argv[0]] + _remaining_argv
+
     if len(sys.argv) == 1:
         try:
             # Run natively as a Windows Service
+            AirPrintBridgeService.printer_override = _printer_override
             servicemanager.Initialize()
             servicemanager.PrepareToHostSingle(AirPrintBridgeService)
             servicemanager.StartServiceCtrlDispatcher()
         except pywintypes.error as e:
             if e.winerror == 1063:
                 print("Running interactively (not started by Service Control Manager)...")
-                _run_interactive()
+                _run_interactive(_printer_override)
             else:
                 raise
     else:
         # Command-line usage
         if sys.argv[1] == 'debug':
-            _run_interactive()
+            _run_interactive(_printer_override)
         else:
             win32serviceutil.HandleCommandLine(AirPrintBridgeService)

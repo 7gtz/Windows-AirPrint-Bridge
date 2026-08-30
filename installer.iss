@@ -21,6 +21,7 @@ CloseApplicationsFilter=*AirPrintBridge*
 
 [Files]
 Source: "dist\AirPrintBridge.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "config.json.example"; DestDir: "{app}"; Flags: ignoreversion onlyifdoesntexist
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--startup auto install"; Flags: runhidden waituntilterminated

@@ -13,3 +13,6 @@ __pycache__/
 # Environment
 .env
 
+# Per-machine printer selection (copy config.json.example -> config.json)
+config.json
+
