@@ -1203,13 +1203,25 @@ class MDNSAdvertiser:
         )
         service_name = f"{clean_instance}.{IPP_SERVICE_TYPE}"
 
-        # Clean host name for target DNS host (must be a valid single-label DNS host)
-        safe_host = (
-            hostname.replace(" ", "-")
-            .replace("/", "-")
-            .replace("\\", "-")
-            .replace(".", "-")[:60]
-        )
+        # Clean host name for target DNS host (must be a valid single-label DNS host).
+        # Include the printer name, not just the PC hostname: if this bridge is later
+        # reconfigured to advertise a different printer, it gets a *new* Bonjour host
+        # target instead of reusing "<pc>.local." — which avoids iOS/Android carrying
+        # over a cached printer identity from the old printer at that same host and
+        # snapping printer selection back to it.
+        def _dns_label_safe(text: str) -> str:
+            return (
+                text.replace(" ", "-")
+                .replace("/", "-")
+                .replace("\\", "-")
+                .replace(".", "-")
+                .replace("(", "")
+                .replace(")", "")
+            )
+
+        safe_printer = _dns_label_safe(self._printer_name)[:40] or "printer"
+        safe_pc = _dns_label_safe(hostname)[:20] or "pc"
+        safe_host = f"{safe_printer}-{safe_pc}"[:63]
 
         # Unique UUID per printer + machine so multiple PCs don't collide on AirPrint clients
         printer_uuid_str = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{self._printer_name}@{hostname}"))
