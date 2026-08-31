@@ -474,7 +474,7 @@ def spool_to_printer(file_path: str, printer_name: str) -> None:
                     printer_name,
                 )
 
-            hdc_handle = win32gui.CreateDC("WINSPOOL", printer_name, None, devmode)
+            hdc_handle = win32gui.CreateDC("WINSPOOL", printer_name, devmode)
             hdc = win32ui.CreateDCFromHandle(hdc_handle)
 
             printer_dpi_x = hdc.GetDeviceCaps(win32con.LOGPIXELSX)
