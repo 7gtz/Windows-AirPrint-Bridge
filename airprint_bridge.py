@@ -463,8 +463,9 @@ def spool_to_printer(file_path: str, printer_name: str) -> None:
             # print queue (tray, paper type, ReadyPrint, etc. — whatever is
             # already configured in Printer Properties) and build the DC
             # from it. The Windows driver's own configuration is the source
-            # of truth, not something this bridge decides — we never choose
-            # or override a value here.
+            # of truth for everything except the one explicit override
+            # below (DefaultSource), which exists because the reported
+            # value for *this* printer has been observed to be unstable.
             printer_info = win32print.GetPrinter(hprinter, 2)
             devmode = printer_info.get("pDevMode")
             if devmode is None:
@@ -502,6 +503,28 @@ def spool_to_printer(file_path: str, printer_name: str) -> None:
                         "actually applied to the print job",
                         devmode.MediaType,
                     )
+
+                # Explicit override, deliberately hardcoded for this specific
+                # printer (this bridge is dedicated to one HP LaserJet M1005
+                # and isn't meant to run against anything else): GetPrinter()'s
+                # DefaultSource has been observed to fluctuate between calls
+                # (258 = "Tray 1" one moment, 259 = "Main Tray" the next),
+                # apparently reflecting live bidirectional printer status
+                # rather than a fixed configured value. Whenever it happens
+                # to report "Main Tray" instead of "Tray 1", the printer
+                # holds the job for media confirmation because Main Tray
+                # doesn't match what's physically loaded. Pin it to Tray 1
+                # rather than trusting the unstable reported value.
+                TRAY_1 = 258
+                DM_DEFAULTSOURCE = 0x00000200
+                if devmode.DefaultSource != TRAY_1:
+                    logger.info(
+                        "Overriding DefaultSource from %s to %s (Tray 1) — "
+                        "reported value is known to fluctuate on this printer",
+                        devmode.DefaultSource, TRAY_1,
+                    )
+                devmode.DefaultSource = TRAY_1
+                devmode.Fields |= DM_DEFAULTSOURCE
 
             hdc_handle = win32gui.CreateDC("WINSPOOL", printer_name, devmode)
             hdc = win32ui.CreateDCFromHandle(hdc_handle)
