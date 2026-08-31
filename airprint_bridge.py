@@ -462,9 +462,9 @@ def spool_to_printer(file_path: str, printer_name: str) -> None:
             # Pull the printer's *existing* DEVMODE straight from the Windows
             # print queue (tray, paper type, ReadyPrint, etc. — whatever is
             # already configured in Printer Properties) and build the DC
-            # from it. We do NOT touch any field on this DEVMODE — the
-            # Windows driver's own configuration is the source of truth,
-            # not something this bridge decides.
+            # from it. The Windows driver's own configuration is the source
+            # of truth, not something this bridge decides — we never choose
+            # or override a value here.
             printer_info = win32print.GetPrinter(hprinter, 2)
             devmode = printer_info.get("pDevMode")
             if devmode is None:
@@ -473,6 +473,35 @@ def spool_to_printer(file_path: str, printer_name: str) -> None:
                     "driver defaults",
                     printer_name,
                 )
+            else:
+                # Narrow, evidence-based exception: GetPrinter()'s DEVMODE
+                # for this printer already carries the correct, user-
+                # configured MediaType value (verified against
+                # DeviceCapabilities() to be "Plain Paper", matching Tray 1
+                # / A4 set in Printing Preferences) — but its DM_MEDIATYPE
+                # bit in `Fields` isn't set, so the driver silently drops
+                # that value when building the print job. The M1005 won't
+                # guess at media and prompts for confirmation instead. We
+                # don't pick a MediaType here — we only flip the bit that
+                # activates the value already present, so the printer's own
+                # configuration actually reaches it.
+                DM_MEDIATYPE = 0x00100000
+                logger.info(
+                    "DEVMODE before fix: DefaultSource=%s MediaType=%s "
+                    "FormName=%s Fields=0x%08X (DM_MEDIATYPE %s)",
+                    getattr(devmode, "DefaultSource", None),
+                    getattr(devmode, "MediaType", None),
+                    getattr(devmode, "FormName", None),
+                    devmode.Fields,
+                    "set" if devmode.Fields & DM_MEDIATYPE else "NOT set",
+                )
+                if getattr(devmode, "MediaType", 0) and not (devmode.Fields & DM_MEDIATYPE):
+                    devmode.Fields |= DM_MEDIATYPE
+                    logger.info(
+                        "Activated DM_MEDIATYPE flag so MediaType=%s is "
+                        "actually applied to the print job",
+                        devmode.MediaType,
+                    )
 
             hdc_handle = win32gui.CreateDC("WINSPOOL", printer_name, devmode)
             hdc = win32ui.CreateDCFromHandle(hdc_handle)
@@ -491,10 +520,20 @@ def spool_to_printer(file_path: str, printer_name: str) -> None:
                 
                 printable_width = hdc.GetDeviceCaps(win32con.HORZRES)
                 printable_height = hdc.GetDeviceCaps(win32con.VERTRES)
-                
-                # Scale the PDF page to fit perfectly inside the printable area
-                scale_x = printable_width / page.rect.width
-                scale_y = printable_height / page.rect.height
+
+                # Scale the PDF page to fit inside the printable area with a
+                # small margin, rather than filling it edge-to-edge. Some
+                # printers (verified on the HP LaserJet M1005) treat a
+                # bitmap that exactly fills the printable area as a
+                # borderless/photo print and hold the job for a manual
+                # "confirm media" prompt at the physical control panel —
+                # even though the DEVMODE-declared tray/media are already
+                # correct. A small inset avoids that heuristic entirely.
+                PAGE_MARGIN_FRACTION = 0.05
+                target_width = printable_width * (1 - 2 * PAGE_MARGIN_FRACTION)
+                target_height = printable_height * (1 - 2 * PAGE_MARGIN_FRACTION)
+                scale_x = target_width / page.rect.width
+                scale_y = target_height / page.rect.height
                 scale = min(scale_x, scale_y)
                 
                 matrix = fitz.Matrix(scale, scale)
